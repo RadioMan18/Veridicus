@@ -695,3 +695,73 @@ pub struct ResumeImportResult {
     pub format: Option<ResumeFormat>,
     pub error_message: Option<String>,
 }
+
+/// Export an ATS-optimized resume to PDF, DOCX, or ODT format.
+#[tauri::command]
+pub async fn export_ats_resume(
+    markdown: String,
+    format: String,
+    output_dir: Option<String>,
+) -> Result<crate::resume_exporter::ExportResult, String> {
+    let export_format = match format.to_lowercase().as_str() {
+        "pdf" => crate::resume_exporter::ExportFormat::Pdf,
+        "docx" => crate::resume_exporter::ExportFormat::Docx,
+        "odt" => crate::resume_exporter::ExportFormat::Odt,
+        _ => {
+            return Ok(crate::resume_exporter::ExportResult {
+                success: false,
+                output_path: None,
+                format: None,
+                error_message: Some(format!("Unsupported format: {}. Use pdf, docx, or odt.", format)),
+            });
+        }
+    };
+
+    let out_dir = output_dir.unwrap_or_else(|| {
+        std::env::temp_dir().to_string_lossy().into_owned()
+    });
+
+    crate::resume_exporter::export_ats_resume(&markdown, export_format, &out_dir)
+}
+
+/// Contact information for resume header.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContactInfoInput {
+    pub name: String,
+    pub phone: Option<String>,
+    pub email: Option<String>,
+    pub linkedin: Option<String>,
+}
+
+/// Generate ATS-optimized resume markdown from claims and JD text.
+#[tauri::command]
+pub async fn generate_ats_resume_markdown(
+    claims: Vec<crate::claims::Claim>,
+    jd_text: Option<String>,
+    contact_info: Option<ContactInfoInput>,
+) -> Result<String, String> {
+    let contact = contact_info.map(|c| crate::ats_engine::ContactInfo {
+        name: c.name,
+        phone: c.phone,
+        email: c.email,
+        linkedin: c.linkedin,
+    }).unwrap_or_default();
+
+    Ok(crate::ats_engine::ATSRules::generate_ats_resume(
+        &claims,
+        jd_text.as_deref(),
+        Some(&contact),
+    ))
+}
+
+/// Run ATS compliance check on resume markdown.
+#[tauri::command]
+pub async fn check_ats_compliance(
+    markdown: String,
+    jd_text: Option<String>,
+) -> Result<crate::ats_engine::ATSReport, String> {
+    Ok(crate::ats_engine::ATSRules::analyze(
+        &markdown,
+        jd_text.as_deref(),
+    ))
+}

@@ -15,6 +15,8 @@ mod fact_check;
 mod typst_engine;
 mod orchestrator;
 mod resume_parser;
+mod ats_engine;
+mod resume_exporter;
 
 use std::sync::Mutex;
 use tauri::generate_handler;
@@ -86,6 +88,9 @@ pub fn main() {
             orchestrator::get_application_records,
             orchestrator::update_application_status,
             orchestrator::open_resume_file,
+            orchestrator::export_ats_resume,
+            orchestrator::generate_ats_resume_markdown,
+            orchestrator::check_ats_compliance,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
