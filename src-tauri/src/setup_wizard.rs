@@ -343,7 +343,7 @@ pub struct OllamaModelInfo {
     pub modified_at: String,
 }
 
-fn parse_claims_from_resume(resume: &str) -> Vec<ClaimSuggestion> {
+pub fn parse_claims_from_resume(resume: &str) -> Vec<ClaimSuggestion> {
     let mut suggestions = Vec::new();
     let lines: Vec<&str> = resume.lines().collect();
 
@@ -399,7 +399,7 @@ fn parse_claims_from_resume(resume: &str) -> Vec<ClaimSuggestion> {
     suggestions
 }
 
-fn update_setup_step(conn: &rusqlite::Connection, step_id: &str) -> Result<(), String> {
+pub fn update_setup_step(conn: &rusqlite::Connection, step_id: &str) -> Result<(), String> {
     conn.execute(
         "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, 'true')",
         [format!("setup_step_{}", step_id)],

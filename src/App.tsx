@@ -1,10 +1,12 @@
 import React, { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import CommandPalette from './components/CommandPalette';
 import ApplicationLedger from './components/ApplicationLedger';
 
 function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [activeView, setActiveView] = useState<'dashboard' | 'ledger'>('dashboard');
+  const [resumeStatus, setResumeStatus] = useState<string>('');
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -16,6 +18,17 @@ function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [commandPaletteOpen]);
+
+  const openResumeFile = async () => {
+    try {
+      const result: any = await invoke('open_resume_file', { filePath: null });
+      setResumeStatus(result.success
+        ? `✓ Resume imported! ${result.claims_imported} claims saved to ledger.`
+        : `✗ Error: ${result.error_message}`);
+    } catch (err: any) {
+      setResumeStatus(`Error: ${err.message || String(err)}`);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-aether-bg text-aether-text p-6 transition-colors duration-300">
@@ -36,6 +49,12 @@ function App() {
             className={`px-4 py-2 rounded bg-aether-surface border border-aether-border hover:bg-aether-primary/10 text-aether-text transition ${activeView === 'ledger' ? 'border-b-2 border-aether-primary' : ''}`}
           >
             Application Ledger
+          </button>
+          <button
+            onClick={openResumeFile}
+            className="px-4 py-2 rounded bg-aether-selected text-aether-selected-fg hover:bg-aether-selected-border font-medium transition border border-aether-selected-border"
+          >
+            Open Resume File
           </button>
           <button
             onClick={() => setCommandPaletteOpen(true)}
@@ -66,7 +85,17 @@ function App() {
                 <p className="text-sm text-aether-text-muted mb-3">STAR-method interview simulator with hiring-manager character.</p>
                 <button className="px-3 py-1 bg-aether-primary text-aether-primary-fg hover:bg-aether-primary-hover text-xs rounded transition">Try /mock</button>
               </div>
+              <div className="p-4 bg-aether-bg rounded border border-aether-border">
+                <h3 className="font-semibold text-aether-text mb-2">/resume &lt;filepath&gt;</h3>
+                <p className="text-sm text-aether-text-muted mb-3">Import a resume file and extract claims to the ledger.</p>
+                <button className="px-3 py-1 bg-aether-selected text-aether-selected-fg hover:bg-aether-selected-border text-xs rounded transition border border-aether-selected-border">Try /resume</button>
+              </div>
             </div>
+            {resumeStatus && (
+              <div className="mt-4 p-3 rounded bg-aether-bg border border-aether-border text-sm">
+                <p className={resumeStatus.startsWith('✓') ? 'text-aether-success' : 'text-aether-error'}>{resumeStatus}</p>
+              </div>
+            )}
           </section>
         )}
 

@@ -84,6 +84,7 @@ pub fn main() {
             orchestrator::analyze_logs,
             orchestrator::get_application_records,
             orchestrator::update_application_status,
+            orchestrator::open_resume_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

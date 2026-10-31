@@ -60,8 +60,16 @@ export default function CommandPalette({ isOpen, onClose }: CommandPaletteProps)
       } else if (cmd.startsWith('/logs')) {
         const analysis: string = await invoke('analyze_logs');
         setStatus(analysis);
+      } else if (cmd.startsWith('/resume')) {
+        const arg = cmd.replace('/resume', '').trim();
+        const result: any = await invoke('open_resume_file', {
+          filePath: arg || null,
+        });
+        setStatus(result.success
+          ? `✓ Resume imported! ${result.claims_imported} claims saved to ledger.`
+          : `✗ Error: ${result.error_message}`);
       } else {
-        setStatus('Unknown command. Available: /apply <url>, /prep <company>, /mock <role>, /followup, /weekly, /logs');
+        setStatus('Unknown command. Available: /apply <url>, /prep <company>, /mock <role>, /resume [filepath], /followup, /weekly, /logs');
       }
     } catch (err: any) {
       setStatus(`Error: ${err.message || String(err)}`);

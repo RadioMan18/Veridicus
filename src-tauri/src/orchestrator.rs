@@ -13,8 +13,11 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use tauri::State;
+use rfd::FileDialog;
 use crate::AppState;
 use crate::db::get_db_connection;
+use crate::claims::CreateClaimRequest;
+use crate::setup_wizard::{parse_claims_from_resume, update_setup_step};
 use uuid::Uuid;
 use chrono::Utc;
 
@@ -593,4 +596,97 @@ pub fn update_application_status(
     ).map_err(|e| format!("Failed to update status: {}", e))?;
 
     Ok(true)
+}
+
+/// Open a resume file via dialog or path, extract claims, and save to the ledger.
+#[tauri::command]
+pub async fn open_resume_file(
+    file_path: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<ResumeImportResult, String> {
+    let content = match file_path {
+        Some(path) => {
+            fs::read_to_string(&path)
+                .map_err(|e| format!("Failed to read resume file: {}", e))?
+        }
+        None => {
+            // Open file dialog using rfd
+            let selected = FileDialog::new()
+                .add_filter("Text / Markdown", &["txt", "md", "pdf"])
+                .pick_file();
+            match selected {
+                Some(path_buf) => {
+                    fs::read_to_string(&path_buf)
+                        .map_err(|e| format!("Failed to read resume file: {}", e))?
+                }
+                None => {
+                    return Ok(ResumeImportResult {
+                        success: false,
+                        claims_imported: 0,
+                        error_message: Some("No file selected".to_string()),
+                    });
+                }
+            }
+        }
+    };
+
+    // Save resume content to app_settings and master resume.md
+    let db_path_str = {
+        let db_path_opt = state.db_path.lock().unwrap();
+        db_path_opt.as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    let conn = get_db_connection(&db_path_str)?;
+
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('master_resume', ?1)",
+        [content.clone()],
+    ).map_err(|e| format!("Failed to save resume: {}", e))?;
+
+    let workspace_root = PathBuf::from(&db_path_str).parent().unwrap().to_path_buf();
+    let master_resume_path = workspace_root.join("master").join("resume.md");
+    fs::write(&master_resume_path, &content).map_err(|e| format!("Failed to write master resume: {}", e))?;
+
+    // Extract claims from resume text
+    let suggestions = parse_claims_from_resume(&content);
+
+    // Convert suggestions to CreateClaimRequest and save
+    let mut count = 0;
+    for suggestion in &suggestions {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+
+        conn.execute(
+            "INSERT INTO claims (id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7)",
+            [
+                id.as_str(),
+                suggestion.statement.as_str(),
+                suggestion.evidence_source.as_str(),
+                suggestion.confirmed_wording.as_str(),
+                suggestion.scope.as_str(),
+                suggestion.category.as_str(),
+                now.as_str(),
+            ],
+        ).map_err(|e| format!("Failed to save claim: {}", e))?;
+        count += 1;
+    }
+
+    crate::setup_wizard::update_setup_step(&conn, "resume")?;
+    crate::setup_wizard::update_setup_step(&conn, "claims")?;
+
+    Ok(ResumeImportResult {
+        success: true,
+        claims_imported: count,
+        error_message: None,
+    })
+}
+
+/// Result of resume import operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResumeImportResult {
+    pub success: bool,
+    pub claims_imported: u32,
+    pub error_message: Option<String>,
 }
