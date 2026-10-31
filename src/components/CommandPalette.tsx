@@ -35,10 +35,12 @@ export default function CommandPalette({ isOpen, onClose }: CommandPaletteProps)
       if (cmd.startsWith('/apply ')) {
         const url = cmd.replace('/apply ', '').trim();
         const result: any = await invoke('execute_apply_workflow', {
-          jdUrl: url,
-          employer: '',
-          role: '',
-          reqId: '',
+          input: {
+            jdUrl: url,
+            employer: '',
+            role: '',
+            reqId: '',
+          },
         });
         setStatus(result.success
           ? `✓ Application created! ID: ${result.application_id}. PDF: ${result.pdf_compiled?.success ? 'compiled' : 'failed'}. Git: ${result.git_commit ? 'committed' : 'failed'}.`

@@ -606,6 +606,16 @@ pub async fn open_resume_file(
 ) -> Result<ResumeImportResult, String> {
     let content = match file_path {
         Some(path) => {
+            // Check if it's a PDF - can't read binary as UTF-8
+            if path.to_lowercase().ends_with(".pdf") {
+                return Ok(ResumeImportResult {
+                    success: false,
+                    claims_imported: 0,
+                    error_message: Some(
+                        "PDF resumes not yet supported. Please convert to .txt or .md first, or paste the text content.",
+                    ).to_string(),
+                });
+            }
             fs::read_to_string(&path)
                 .map_err(|e| format!("Failed to read resume file: {}", e))?
         }
