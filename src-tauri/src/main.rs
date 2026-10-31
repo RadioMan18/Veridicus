@@ -1,0 +1,69 @@
+//! CareerOS Desktop — Tauri v2 entry point.
+//!
+//! Honesty guardrail verification engine with SQLCipher-encrypted Claims Ledger.
+
+mod workspace;
+mod db;
+mod claims;
+mod git_engine;
+mod setup_wizard;
+mod ollama;
+mod scraper;
+mod gap_analyzer;
+
+use std::sync::Mutex;
+use tauri::generate_handler;
+
+#[derive(Default)]
+pub struct AppState {
+    pub db_path: Mutex<Option<String>>,
+}
+
+pub fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .manage(AppState::default())
+        .invoke_handler(generate_handler![
+            workspace::initialize_workspace,
+            workspace::get_workspace_status,
+            db::init_encrypted_database_cmd,
+            db::verify_sqlcipher_cmd,
+            db::verify_key_cmd,
+            claims::create_claim,
+            claims::get_claim,
+            claims::list_claims,
+            claims::update_claim,
+            claims::delete_claim,
+            claims::create_rule,
+            claims::list_rules,
+            claims::update_rule,
+            claims::delete_rule,
+            claims::get_presentation_rules,
+            claims::save_presentation_rule,
+            git_engine::init_repository,
+            git_engine::commit_changes,
+            git_engine::get_commit_history,
+            git_engine::get_git_status,
+            setup_wizard::get_setup_wizard_state,
+            setup_wizard::save_user_profile,
+            setup_wizard::save_resume_content,
+            setup_wizard::extract_claims_from_resume,
+            setup_wizard::save_claims,
+            setup_wizard::save_presentation_rules,
+            setup_wizard::complete_setup_wizard,
+            setup_wizard::get_available_ollama_models,
+            setup_wizard::pull_ollama_model,
+            ollama::ollama_health_check,
+            ollama::get_ollama_models,
+            ollama::pull_ollama_model_progress,
+            ollama::chat_with_ollama,
+            ollama::generate_with_ollama,
+            ollama::save_ollama_config,
+            ollama::get_ollama_config,
+            ollama::pull_ollama_model_progress,
+            scraper::scrape_job_page,
+            gap_analyzer::analyze_job_gaps,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}

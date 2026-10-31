@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+**/target/
+
+# Dependencies
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Tauri build
+src-tauri/target/
+src-tauri/icons/*.ico
+!src-tauri/icons/icon.ico
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Cargo
+**/Cargo.lock
+
+# Temporary
+tmp/
+temp/

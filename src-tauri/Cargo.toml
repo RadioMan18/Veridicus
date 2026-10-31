@@ -1,0 +1,35 @@
+[package]
+name = "careeros"
+version = "0.1.0"
+description = "CareerOS Desktop — privacy-first job search OS with honesty guardrails"
+authors = ["CareerOS"]
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled-sqlcipher"] }
+git2 = "0.19"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1"
+comrak = "0.30"
+hex = "0.4"
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+rand = "0.8"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+dirs = "3"
+reqwest = { version = "0.12", features = ["json", "blocking"] }
+scraper = "0.20"
+htmd = "0.1"
+windows = { version = "0.52", features = ["Win32_Security_Credentials"] }
+winreg = "0.5"
