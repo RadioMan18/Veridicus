@@ -14,6 +14,7 @@ mod skills;
 mod fact_check;
 mod typst_engine;
 mod orchestrator;
+mod resume_parser;
 
 use std::sync::Mutex;
 use tauri::generate_handler;

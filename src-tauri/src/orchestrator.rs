@@ -17,6 +17,7 @@ use rfd::FileDialog;
 use crate::AppState;
 use crate::db::get_db_connection;
 use crate::claims::CreateClaimRequest;
+use crate::resume_parser::{extract_resume_text, ResumeFormat};
 use crate::setup_wizard::{parse_claims_from_resume, update_setup_step};
 use uuid::Uuid;
 use chrono::Utc;
@@ -604,35 +605,27 @@ pub async fn open_resume_file(
     file_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ResumeImportResult, String> {
-    let content = match file_path {
+    let (format, content) = match file_path {
         Some(path) => {
-            // Check if it's a PDF - can't read binary as UTF-8
-            if path.to_lowercase().ends_with(".pdf") {
-                return Ok(ResumeImportResult {
-                    success: false,
-                    claims_imported: 0,
-                    error_message: Some(
-                        "PDF resumes not yet supported. Please convert to .txt or .md first, or paste the text content.",
-                    ).to_string(),
-                });
-            }
-            fs::read_to_string(&path)
+            extract_resume_text(&path)
                 .map_err(|e| format!("Failed to read resume file: {}", e))?
         }
         None => {
             // Open file dialog using rfd
             let selected = FileDialog::new()
-                .add_filter("Text / Markdown", &["txt", "md", "pdf"])
+                .add_filter("Resume files", &["pdf", "docx", "odt", "txt", "md"])
                 .pick_file();
             match selected {
                 Some(path_buf) => {
-                    fs::read_to_string(&path_buf)
+                    let path_str = path_buf.to_string_lossy().to_string();
+                    extract_resume_text(&path_str)
                         .map_err(|e| format!("Failed to read resume file: {}", e))?
                 }
                 None => {
                     return Ok(ResumeImportResult {
                         success: false,
                         claims_imported: 0,
+                        format: None,
                         error_message: Some("No file selected".to_string()),
                     });
                 }
@@ -690,6 +683,7 @@ pub async fn open_resume_file(
         success: true,
         claims_imported: count,
         error_message: None,
+        format: Some(format),
     })
 }
 
@@ -698,5 +692,6 @@ pub async fn open_resume_file(
 pub struct ResumeImportResult {
     pub success: bool,
     pub claims_imported: u32,
+    pub format: Option<ResumeFormat>,
     pub error_message: Option<String>,
 }
