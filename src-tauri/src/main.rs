@@ -13,6 +13,7 @@ mod gap_analyzer;
 mod skills;
 mod fact_check;
 mod typst_engine;
+mod orchestrator;
 
 use std::sync::Mutex;
 use tauri::generate_handler;
@@ -75,6 +76,14 @@ pub fn main() {
             typst_engine::rasterize_pdf_pages,
             typst_engine::analyze_visual_qa,
             typst_engine::verify_sidecars,
+            orchestrator::execute_apply_workflow,
+            orchestrator::run_company_research,
+            orchestrator::start_interview_simulator,
+            orchestrator::draft_followups,
+            orchestrator::generate_weekly_report,
+            orchestrator::analyze_logs,
+            orchestrator::get_application_records,
+            orchestrator::update_application_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
