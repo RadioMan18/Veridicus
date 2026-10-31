@@ -10,6 +10,9 @@ mod setup_wizard;
 mod ollama;
 mod scraper;
 mod gap_analyzer;
+mod skills;
+mod fact_check;
+mod typst_engine;
 
 use std::sync::Mutex;
 use tauri::generate_handler;
@@ -63,6 +66,15 @@ pub fn main() {
             ollama::pull_ollama_model_progress,
             scraper::scrape_job_page,
             gap_analyzer::analyze_job_gaps,
+            skills::execute_skill,
+            skills::list_skill_templates,
+            skills::seed_default_skills,
+            fact_check::run_fact_check_pass,
+            fact_check::get_fact_check_summary,
+            typst_engine::compile_typst_pdf,
+            typst_engine::rasterize_pdf_pages,
+            typst_engine::analyze_visual_qa,
+            typst_engine::verify_sidecars,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
