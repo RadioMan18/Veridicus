@@ -25,18 +25,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": "dir",
-    "identifier": "com.careeros.desktop",
-    "icon": [
-      "icons/icon.ico"
-    ],
-    "resources": [
-      "sidecars/*"
-    ],
-    "externalBin": [
-      "sidecars/typst.exe",
-      "sidecars/pdftoppm.exe",
-      "sidecars/pdftotext.exe"
-    ]
+    "targets": ["msi"],
+    "icon": ["icons/icon.ico"],
+    "resources": ["sidecars/*"],
+    "externalBin": ["sidecars/typst.exe", "sidecars/pdftoppm.exe", "sidecars/pdftotext.exe"]
   }
 }
