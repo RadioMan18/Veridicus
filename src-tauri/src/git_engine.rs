@@ -47,13 +47,23 @@ pub fn commit_changes(
     let sig = Signature::now("CareerOS", "careeros@localhost")
         .map_err(|e| format!("Failed to create signature: {}", e))?;
 
+    let parent = match repo.head() {
+        Ok(head) => Some(
+            head.peel_to_commit()
+                .map_err(|e| format!("Failed to resolve current HEAD commit: {}", e))?,
+        ),
+        Err(error) if error.code() == git2::ErrorCode::UnbornBranch => None,
+        Err(error) => return Err(format!("Failed to resolve current HEAD: {}", error)),
+    };
+    let parents = parent.as_ref().map(|commit| vec![commit]).unwrap_or_default();
+
     let oid = repo.commit(
         Some("HEAD"),
         &sig,
         &sig,
         &message,
         &tree,
-        &[],
+        &parents,
     ).map_err(|e| format!("Failed to commit: {}", e))?;
 
     Ok(oid.to_string())

@@ -5,6 +5,10 @@ description = "CareerOS Desktop — privacy-first job search OS with honesty gua
 authors = ["CareerOS"]
 edition = "2021"
 
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -36,3 +40,4 @@ winreg = "0.5"
 tauri-plugin-dialog = "2.8.4"
 rfd = "0.17.2"
 zip = "0.6"
+tauri-plugin-fs = "2"

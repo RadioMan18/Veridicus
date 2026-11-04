@@ -4,19 +4,23 @@
   "version": "0.1.0",
   "identifier": "com.careeros.desktop",
   "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420"
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "CareerOS",
         "width": 1280,
         "height": 800,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
-        "maximized": false
+        "maximized": false,
+        "backgroundColor": "#020617"
       }
     ],
     "security": {

@@ -54,6 +54,7 @@ pub struct ApplyResult {
 pub async fn execute_apply_workflow(
     input: ApplyInput,
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<ApplyResult, String> {
     let mut result = ApplyResult {
         application_id: String::new(),
@@ -223,9 +224,15 @@ pub async fn execute_apply_workflow(
     if let Some(cover_result) = &result.cover_letter {
         let app_dir = workspace_root.join("applications").join(&app_id);
         let typ_path = app_dir.join("cover-letter.typ");
-        fs::write(&typ_path, &cover_result.markdown_output).map_err(|e| format!("Failed to write Typst file: {}", e))?;
+        fs::write(
+            &typ_path,
+            crate::typst_engine::with_document_font_defaults(&cover_result.markdown_output),
+        ).map_err(|e| format!("Failed to write Typst file: {}", e))?;
 
-        let pdf_result = crate::typst_engine::compile_typst_pdf(typ_path.to_string_lossy().into_owned());
+        let pdf_result = crate::typst_engine::compile_typst_pdf(
+            typ_path.to_string_lossy().into_owned(),
+            app.clone(),
+        );
         match pdf_result {
             Ok(pr) => {
                 result.pdf_compiled = Some(pr.clone());
@@ -234,6 +241,7 @@ pub async fn execute_apply_workflow(
                     let raster_result = crate::typst_engine::rasterize_pdf_pages(
                         pr.pdf_path.clone(),
                         app_dir.to_string_lossy().into_owned(),
+                        app.clone(),
                     );
                     match raster_result {
                         Ok(rr) => {
@@ -245,6 +253,7 @@ pub async fn execute_apply_workflow(
                                 rr.png_paths,
                                 Some(employer.clone()),
                                 Some(role.clone()),
+                                app.clone(),
                             );
                             match vqa_result {
                                 Ok(vf) => result.visual_flags = Some(vf),
@@ -332,7 +341,7 @@ fn app_dir_to_str(workspace_root: &PathBuf, app_id: &str) -> String {
 pub async fn run_company_research(company: String, state: State<'_, AppState>) -> Result<String, String> {
     let ollama_config = crate::ollama::get_ollama_config(state);
     let config = ollama_config.unwrap_or_default();
-    let model = config.deep_model.clone().unwrap_or_else(|| "qwen2.5:7b".to_string());
+    let model = config.deep_model.clone().or_else(|| config.fast_model.clone()).unwrap_or_else(|| "llama3.2:latest".to_string());
 
     let prompt = format!(
         "Research the company {} and provide a briefing for a job application. Include: company overview, recent news, products/services, culture, interview tips, and key talking points for a cover letter.",
@@ -366,7 +375,7 @@ pub async fn run_company_research(company: String, state: State<'_, AppState>) -
 pub async fn start_interview_simulator(role: String, state: State<'_, AppState>) -> Result<String, String> {
     let ollama_config = crate::ollama::get_ollama_config(state);
     let config = ollama_config.unwrap_or_default();
-    let model = config.deep_model.clone().unwrap_or_else(|| "qwen2.5:7b".to_string());
+    let model = config.deep_model.clone().or_else(|| config.fast_model.clone()).unwrap_or_else(|| "llama3.2:latest".to_string());
 
     let prompt = format!(
         "You are a hiring manager interviewing a candidate for a {} role. Conduct a STAR-method behavioral interview. Ask one question at a time, wait for the user's response, then provide feedback and ask the next question. Start with an introduction and the first question.",
@@ -426,7 +435,7 @@ pub async fn draft_followups(state: State<'_, AppState>) -> Result<String, Strin
 
     let ollama_config = crate::ollama::get_ollama_config(state);
     let config = ollama_config.unwrap_or_default();
-    let _model = config.fast_model.clone().unwrap_or_else(|| "llama3.2:3b".to_string());
+    let _model = config.fast_model.clone().or_else(|| config.deep_model.clone()).unwrap_or_else(|| "llama3.2:latest".to_string());
 
     let mut followups = String::from("## Follow-up Drafts\n\n");
     for (id, employer, role, date) in apps {
@@ -604,10 +613,11 @@ pub fn update_application_status(
 pub async fn open_resume_file(
     file_path: Option<String>,
     state: State<'_, AppState>,
+    app: tauri::AppHandle,
 ) -> Result<ResumeImportResult, String> {
     let (format, content) = match file_path {
         Some(path) => {
-            extract_resume_text(&path)
+            extract_resume_text(&path, &app)
                 .map_err(|e| format!("Failed to read resume file: {}", e))?
         }
         None => {
@@ -618,7 +628,7 @@ pub async fn open_resume_file(
             match selected {
                 Some(path_buf) => {
                     let path_str = path_buf.to_string_lossy().to_string();
-                    extract_resume_text(&path_str)
+                    extract_resume_text(&path_str, &app)
                         .map_err(|e| format!("Failed to read resume file: {}", e))?
                 }
                 None => {
@@ -660,9 +670,18 @@ pub async fn open_resume_file(
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        conn.execute(
+        let inserted = conn.execute(
             "INSERT INTO claims (id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM claims
+                 WHERE status = 'confirmed'
+                   AND statement = ?2
+                   AND evidence_source = ?3
+                   AND confirmed_wording = ?4
+                   AND scope = ?5
+                   AND category = ?6
+             )",
             [
                 id.as_str(),
                 suggestion.statement.as_str(),
@@ -673,7 +692,9 @@ pub async fn open_resume_file(
                 now.as_str(),
             ],
         ).map_err(|e| format!("Failed to save claim: {}", e))?;
-        count += 1;
+        if inserted > 0 {
+            count += 1;
+        }
     }
 
     crate::setup_wizard::update_setup_step(&conn, "resume")?;
@@ -702,6 +723,7 @@ pub async fn export_ats_resume(
     markdown: String,
     format: String,
     output_dir: Option<String>,
+    app: tauri::AppHandle,
 ) -> Result<crate::resume_exporter::ExportResult, String> {
     let export_format = match format.to_lowercase().as_str() {
         "pdf" => crate::resume_exporter::ExportFormat::Pdf,
@@ -721,7 +743,7 @@ pub async fn export_ats_resume(
         std::env::temp_dir().to_string_lossy().into_owned()
     });
 
-    crate::resume_exporter::export_ats_resume(&markdown, export_format, &out_dir)
+    crate::resume_exporter::export_ats_resume(&markdown, export_format, &out_dir, &app)
 }
 
 /// Contact information for resume header.

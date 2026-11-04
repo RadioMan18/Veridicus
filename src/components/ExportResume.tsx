@@ -1,18 +1,26 @@
-import React, { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { saveAs } from 'file-saver';
 
 interface ExportResumeProps {
+  isOpen: boolean;
+  initialFormat: 'pdf' | 'docx' | 'odt';
   onClose: () => void;
 }
 
-export default function ExportResume({ onClose }: ExportResumeProps) {
+export default function ExportResume({ isOpen, initialFormat, onClose }: ExportResumeProps) {
   const [format, setFormat] = useState<'pdf' | 'docx' | 'odt'>('pdf');
   const [status, setStatus] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [markdown, setMarkdown] = useState('# Career Resume\n\n## Summary\n- Experienced professional\n\n## Experience\n- Professional experience\n\n## Skills\n- Professional skills\n\n## Education\n- Degree in relevant field\n');
 
   const formats = ['pdf', 'docx', 'odt'] as const;
+
+  useEffect(() => {
+    if (isOpen) {
+      setFormat(initialFormat);
+      setStatus('');
+    }
+  }, [isOpen, initialFormat]);
 
   const exportResume = async () => {
     setLoading(true);
@@ -59,8 +67,7 @@ export default function ExportResume({ onClose }: ExportResumeProps) {
     }
   };
 
-  if (!status) {
-    onClose();
+  if (!isOpen) {
     return null;
   }
 

@@ -1,10 +1,13 @@
-use rusqlite::{Connection, Result};
 use rusqlite::ffi::{sqlite3_key, SQLITE_OK};
-use std::path::PathBuf;
+use rusqlite::{Connection, Result};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use rand::Rng;
 use crate::AppState;
+
+static CACHED_DB_KEY: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 
 /// Generate a secure key for SQLCipher (32 random bytes)
 fn generate_key() -> Vec<u8> {
@@ -14,9 +17,69 @@ fn generate_key() -> Vec<u8> {
     key
 }
 
+pub fn get_or_create_db_key(db_path: &Path) -> Result<Vec<u8>, String> {
+    let mut cache = CACHED_DB_KEY.lock().map_err(|e| e.to_string())?;
+    if let Some(ref k) = *cache {
+        return Ok(k.clone());
+    }
+
+    let workspace_root = db_path.parent().ok_or("Invalid database path")?;
+    let dot_careeros = workspace_root.join(".careeros");
+    let _ = std::fs::create_dir_all(&dot_careeros);
+    let key_path = dot_careeros.join(".db_key");
+
+    let key = if key_path.exists() {
+        let hex_str = std::fs::read_to_string(&key_path)
+            .map_err(|e| format!("Failed to read key file: {}", e))?;
+        hex::decode(hex_str.trim())
+            .map_err(|e| format!("Invalid hex key in key file: {}", e))?
+    } else {
+        let k = generate_key();
+        let hex_str = hex::encode(&k);
+        let _ = std::fs::write(&key_path, hex_str);
+        k
+    };
+
+    *cache = Some(key.clone());
+    Ok(key)
+}
+
 pub fn get_db_connection(db_path: &str) -> Result<Connection, String> {
-    Connection::open(db_path)
-        .map_err(|e| format!("Failed to open database: {}", e))
+    let path = PathBuf::from(db_path);
+    let key = get_or_create_db_key(&path)?;
+    let conn = Connection::open(&path)
+        .map_err(|e| format!("Failed to open database: {}", e))?;
+
+    unsafe {
+        let handle = conn.handle();
+        let rc = sqlite3_key(handle, key.as_ptr() as *const _, key.len() as _);
+        if rc != SQLITE_OK {
+            return Err("failed to set SQLCipher key".to_string());
+        }
+    }
+
+    match conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())) {
+        Ok(_) => Ok(conn),
+        Err(_) => {
+            // Re-initialize cleanly if previous schema was invalid or created with missing key
+            drop(conn);
+            let _ = std::fs::remove_file(&path);
+            init_encrypted_database(&path, &key)?;
+
+            let conn2 = Connection::open(&path)
+                .map_err(|e2| format!("Failed to reopen database: {}", e2))?;
+            unsafe {
+                let handle = conn2.handle();
+                let rc = sqlite3_key(handle, key.as_ptr() as *const _, key.len() as _);
+                if rc != SQLITE_OK {
+                    return Err("failed to set SQLCipher key on recreated db".to_string());
+                }
+            }
+            conn2.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
+                .map_err(|e2| format!("Failed to verify recreated database: {}", e2))?;
+            Ok(conn2)
+        }
+    }
 }
 
 /// Wrap the database key with a recovery code (PBKDF2 + AES-256-GCM)
@@ -32,7 +95,7 @@ fn wrap_key_with_recovery(db_key: &[u8], recovery_code: &str) -> Result<Vec<u8>,
         .map_err(|e| format!("PBKDF2 failed: {}", e))?;
 
     let aes_key = Key::<Aes256Gcm>::from_slice(&derived_key_bytes);
-    let nonce = Nonce::from_slice(b"unique nonce 16byte");
+    let nonce = Nonce::from_slice(b"careeros_key");
     let cipher = Aes256Gcm::new(aes_key);
 
     let encrypted = cipher.encrypt(nonce, db_key)
@@ -131,6 +194,9 @@ pub fn init_encrypted_database(db_path: &PathBuf, key: &[u8]) -> Result<(), Stri
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
+
+        INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ollama_fast_model', 'llama3.2:latest');
+        INSERT OR IGNORE INTO app_settings (key, value) VALUES ('ollama_deep_model', 'llama3.2:latest');
         COMMIT;
     ".trim()
 
@@ -153,6 +219,8 @@ pub async fn init_encrypted_database_cmd(
     let workspace_root = docs_dir.join("CareerOS");
     let db_path = workspace_root.join("careeros.db");
 
+    *state.db_path.lock().unwrap() = Some(db_path.to_string_lossy().into_owned());
+
     if db_path.exists() {
         return Ok(InitResult {
             db_path: db_path.to_string_lossy().into_owned(),
@@ -162,7 +230,7 @@ pub async fn init_encrypted_database_cmd(
 
     let recovery_code = get_recovery_code();
 
-    let db_key = generate_key();
+    let db_key = get_or_create_db_key(&db_path)?;
     let _wrapped_key = wrap_key_with_recovery(&db_key, &recovery_code).ok();
 
     let _ = init_encrypted_database(&db_path, &db_key)

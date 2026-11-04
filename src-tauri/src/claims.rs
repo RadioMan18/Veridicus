@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::AppState;
+use crate::db::get_db_connection;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Claim {
@@ -69,12 +70,13 @@ pub struct UpdateRuleRequest {
 }
 
 fn get_conn(state: &State<'_, AppState>) -> Result<Connection, String> {
-    let db_path_opt = state.db_path.lock().unwrap();
-    let db_path_str = db_path_opt.as_ref()
-        .ok_or("Database not initialized")?;
-    
-    Connection::open(db_path_str)
-        .map_err(|e| format!("Failed to open DB: {}", e))
+    let db_path_str = {
+        let db_path_opt = state.db_path.lock().unwrap();
+        db_path_opt.as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    get_db_connection(&db_path_str)
 }
 
 #[tauri::command]

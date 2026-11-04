@@ -140,33 +140,44 @@ pub fn chat_with_ollama(
     }
 
     let request = OllamaChatRequest {
-        model,
-        messages,
+        model: model.clone(),
+        messages: messages.clone(),
         stream: Some(false),
-        format,
-        options: Some(options),
+        format: format.clone(),
+        options: Some(options.clone()),
     };
 
-    let client = Client::new();
-    let response = client
-        .post(format!("{}/api/chat", OLLAMA_BASE_URL))
-        .json(&request)
-        .timeout(Duration::from_secs(300))
-        .send();
+    let mut last_err: Option<String> = None;
+    for attempt in 0..3 {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(300))
+            .build()
+            .map_err(|e| format!("Failed to build client: {}", e))?;
+        let response = client
+            .post(format!("{}/api/chat", OLLAMA_BASE_URL))
+            .header("Connection", "keep-alive")
+            .json(&request)
+            .send();
 
-    match response {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                let chat_resp: OllamaChatResponse = resp.json().map_err(|e| e.to_string())?;
-                Ok(chat_resp)
-            } else {
-                let status = resp.status();
-                let text = resp.text().unwrap_or_default();
-                Err(format!("Ollama chat error ({}): {}", status, text))
+        match response {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let chat_resp: OllamaChatResponse = resp.json().map_err(|e| e.to_string())?;
+                    return Ok(chat_resp);
+                } else {
+                    let status = resp.status();
+                    let text = resp.text().unwrap_or_default();
+                    last_err = Some(format!("Ollama chat error ({}): {}", status, text));
+                }
+            }
+            Err(e) => {
+                last_err = Some(format!("Ollama chat request failed: {}", e));
+                std::thread::sleep(std::time::Duration::from_millis(500 * (attempt + 1)));
+                continue;
             }
         }
-        Err(e) => Err(format!("Ollama chat request failed: {}", e)),
     }
+    Err(last_err.unwrap_or_else(|| "Ollama chat request failed".to_string()))
 }
 
 /// Send a text generation request to Ollama (non-streaming).
@@ -188,34 +199,45 @@ pub fn generate_with_ollama(
     }
 
     let request = OllamaGenerateRequest {
-        model,
+        model: model.clone(),
         prompt,
         system,
         stream: Some(false),
         format,
-        options: Some(options),
+        options: Some(options.clone()),
     };
 
-    let client = Client::new();
-    let response = client
-        .post(format!("{}/api/generate", OLLAMA_BASE_URL))
-        .json(&request)
-        .timeout(Duration::from_secs(300))
-        .send();
+    let mut last_err: Option<String> = None;
+    for attempt in 0..3 {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(300))
+            .build()
+            .map_err(|e| format!("Failed to build client: {}", e))?;
+        let response = client
+            .post(format!("{}/api/generate", OLLAMA_BASE_URL))
+            .header("Connection", "keep-alive")
+            .json(&request)
+            .send();
 
-    match response {
-        Ok(resp) => {
-            if resp.status().is_success() {
-                let gen_resp: OllamaGenerateResponse = resp.json().map_err(|e| e.to_string())?;
-                Ok(gen_resp)
-            } else {
-                let status = resp.status();
-                let text = resp.text().unwrap_or_default();
-                Err(format!("Ollama generate error ({}): {}", status, text))
+        match response {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    let gen_resp: OllamaGenerateResponse = resp.json().map_err(|e| e.to_string())?;
+                    return Ok(gen_resp);
+                } else {
+                    let status = resp.status();
+                    let text = resp.text().unwrap_or_default();
+                    last_err = Some(format!("Ollama generate error ({}): {}", status, text));
+                }
+            }
+            Err(e) => {
+                last_err = Some(format!("Ollama generate request failed: {}", e));
+                std::thread::sleep(std::time::Duration::from_millis(500 * (attempt + 1)));
+                continue;
             }
         }
-        Err(e) => Err(format!("Ollama generate request failed: {}", e)),
     }
+    Err(last_err.unwrap_or_else(|| "Ollama generate request failed".to_string()))
 }
 
 /// Save Ollama model role configuration (fast/deep) to app_settings.
@@ -269,6 +291,27 @@ pub fn get_ollama_config(
         [],
         |row| row.get(0),
     ).ok();
+
+    // Auto-set defaults if not configured
+    if fast_model.is_none() || deep_model.is_none() {
+        let default_model = "llama3.2:latest".to_string();
+        if fast_model.is_none() {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ollama_fast_model', ?1)",
+                [&default_model],
+            );
+        }
+        if deep_model.is_none() {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ollama_deep_model', ?1)",
+                [&default_model],
+            );
+        }
+        return Ok(OllamaConfig {
+            fast_model: Some(default_model.clone()),
+            deep_model: Some(default_model)
+        });
+    }
 
     Ok(OllamaConfig { fast_model, deep_model })
 }

@@ -2,6 +2,9 @@
 //!
 //! Honesty guardrail verification engine with SQLCipher-encrypted Claims Ledger.
 
+// Prevents additional console window on Windows in release, DO NOT REMOVE!!
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod workspace;
 mod db;
 mod claims;
@@ -27,8 +30,26 @@ pub struct AppState {
 }
 
 pub fn main() {
+    let _single_instance_guard = match std::net::TcpListener::bind("127.0.0.1:42139") {
+        Ok(listener) => listener,
+        Err(_) => {
+            rfd::MessageDialog::new()
+                .set_title("CareerOS")
+                .set_description("CareerOS is already running in the background. Please close the existing instance or check Task Manager.")
+                .show();
+            return;
+        }
+    };
+
+    std::panic::set_hook(Box::new(|info| {
+        let msg = format!("PANIC: {}\nBacktrace: {:?}", info, std::backtrace::Backtrace::capture());
+        let _ = std::fs::write("panic.log", msg);
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .manage(AppState::default())
         .invoke_handler(generate_handler![
             workspace::initialize_workspace,
@@ -52,6 +73,7 @@ pub fn main() {
             git_engine::get_commit_history,
             git_engine::get_git_status,
             setup_wizard::get_setup_wizard_state,
+            setup_wizard::get_setup_wizard_data,
             setup_wizard::save_user_profile,
             setup_wizard::save_resume_content,
             setup_wizard::extract_claims_from_resume,

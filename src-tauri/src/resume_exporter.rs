@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::Command;
+use tauri::AppHandle;
 
 /// Export format options.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,6 +34,7 @@ pub fn export_ats_resume(
     markdown: &str,
     format: ExportFormat,
     output_dir: &str,
+    app: &AppHandle,
 ) -> Result<ExportResult, String> {
     fs::create_dir_all(output_dir).map_err(|e| format!("Failed to create output dir: {}", e))?;
 
@@ -41,15 +42,28 @@ pub fn export_ats_resume(
 
     match format {
         ExportFormat::Pdf => {
-            let typ_path = PathBuf::from(output_dir).join(format!("{}.typ", base_name));
-            fs::write(&typ_path, markdown).map_err(|e| format!("Failed to write .typ: {}", e))?;
+            let output_dir = PathBuf::from(output_dir)
+                .canonicalize()
+                .map_err(|e| format!("Failed to resolve output directory: {}", e))?;
+            let typ_path = output_dir.join(format!("{}.typ", base_name));
+            fs::write(
+                &typ_path,
+                crate::typst_engine::with_document_font_defaults(markdown),
+            ).map_err(|e| format!("Failed to write .typ: {}", e))?;
 
-            let output = Command::new("sidecars/typst")
+            let (typst_path, mut command) =
+                crate::typst_engine::sidecar_command(app, "typst", &output_dir)?;
+            let output = command
                 .arg("compile")
                 .arg(&typ_path)
-                .arg(PathBuf::from(output_dir).join(format!("{}.pdf", base_name)))
+                .arg(output_dir.join(format!("{}.pdf", base_name)))
                 .output()
-                .map_err(|e| format!("Failed to execute Typst: {}", e))?;
+                .map_err(|error| format!(
+                    "Failed to execute bundled Typst binary at {} from {}: {}",
+                    typst_path.display(),
+                    output_dir.display(),
+                    error
+                ))?;
 
             if !output.status.success() {
                 return Ok(ExportResult {
@@ -63,7 +77,7 @@ pub fn export_ats_resume(
                 });
             }
 
-            let pdf_path = PathBuf::from(output_dir).join(format!("{}.pdf", base_name));
+            let pdf_path = output_dir.join(format!("{}.pdf", base_name));
             Ok(ExportResult {
                 success: true,
                 output_path: Some(pdf_path.to_string_lossy().into_owned()),
@@ -118,28 +132,43 @@ fn generate_docx(markdown: &str, output_path: &PathBuf) -> Result<(), String> {
 <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
 <Default Extension="xml" ContentType="application/xml"/>
 <Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
+<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
 </Types>"#
         .as_bytes(),
     )
     .map_err(|e| format!("Failed to write content types: {}", e))?;
 
-    // word/_rels/document.xml.rels
-    zip.start_file("word/_rels/document.xml.rels", options)
+    zip.start_file("_rels/.rels", options)
         .map_err(|e| format!("Failed to write rels: {}", e))?;
     zip.write_all(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
-<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="document.xml"/>
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>"#
         .as_bytes(),
     )
-    .map_err(|e| format!("Failed to write rels: {}", e))?;
+    .map_err(|e| format!("Failed to write package relationships: {}", e))?;
 
-    // word/document.xml
+    zip.start_file("word/_rels/document.xml.rels", options)
+        .map_err(|e| format!("Failed to write document relationships: {}", e))?;
+    zip.write_all(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#
+        .as_bytes(),
+    )
+    .map_err(|e| format!("Failed to write document relationships: {}", e))?;
+
     zip.start_file("word/document.xml", options)
         .map_err(|e| format!("Failed to write document.xml: {}", e))?;
     zip.write_all(doc_content.as_bytes())
         .map_err(|e| format!("Failed to write document.xml: {}", e))?;
+
+    zip.start_file("word/styles.xml", options)
+        .map_err(|e| format!("Failed to write styles.xml: {}", e))?;
+    zip.write_all(generate_docx_styles_xml().as_bytes())
+        .map_err(|e| format!("Failed to write styles.xml: {}", e))?;
 
     zip.finish().map_err(|e| format!("Failed to finish ZIP: {}", e))?;
     Ok(())
@@ -176,8 +205,8 @@ fn generate_docx_xml(markdown: &str) -> String {
         } else if trimmed.starts_with("- ") {
             let text = &trimmed[2..];
             xml.push_str(&format!(
-                r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:ilvl w:val="0"/></w:numPr></w:pPr><w:r><w:t>{}</w:t></w:r></w:p>"#,
-                escape_xml(text)
+                r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/></w:pPr><w:r><w:t>{}</w:t></w:r></w:p>"#,
+                escape_xml(&format!("• {}", text))
             ));
         } else {
             xml.push_str(&format!(
@@ -187,17 +216,45 @@ fn generate_docx_xml(markdown: &str) -> String {
         }
     }
 
-    xml.push_str("</w:body></w:document>");
+    xml.push_str(
+        r#"<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>"#,
+    );
     xml
+}
+
+fn generate_docx_styles_xml() -> String {
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>
+<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/><w:basedOn w:val="Normal"/><w:pPr><w:keepNext/></w:pPr><w:rPr><w:b/><w:sz w:val="26"/></w:rPr></w:style>
+<w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:pPr><w:ind w:left="360"/></w:pPr></w:style>
+</w:styles>"#
+        .to_string()
 }
 
 /// Escape XML special characters.
 fn escape_xml(text: &str) -> String {
-    text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace("\"", "&quot;")
-        .replace("'", "&apos;")
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&apos;"),
+            '\t' | '\n' | '\r' => escaped.push(character),
+            character
+                if ('\u{20}'..='\u{D7FF}').contains(&character)
+                    || ('\u{E000}'..='\u{FFFD}').contains(&character)
+                    || ('\u{10000}'..='\u{10FFFF}').contains(&character) =>
+            {
+                escaped.push(character);
+            }
+            _ => {}
+        }
+    }
+    escaped
 }
 
 /// Generate ODT from Markdown using manual XML (ZIP-based ODT).
@@ -356,4 +413,58 @@ fn generate_odt_manifest_xml() -> String {
 <manifest:file-entry manifest:media-type="" manifest:full-path="Pictures/"/>
 </manifest:manifest>"#
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn generated_docx_has_valid_package_relationships_and_document_parts() {
+        let output_path = std::env::temp_dir().join(format!(
+            "careeros-docx-test-{}.docx",
+            uuid::Uuid::new_v4()
+        ));
+        generate_docx(
+            "# Resume\n\n## Experience\n\n- Built reliable tools",
+            &output_path,
+        )
+        .expect("DOCX generation should succeed");
+
+        let file = fs::File::open(&output_path).expect("generated DOCX should exist");
+        let mut archive = zip::ZipArchive::new(file).expect("DOCX should be a ZIP archive");
+        let mut read_entry = |name: &str| {
+            let mut content = String::new();
+            archive
+                .by_name(name)
+                .unwrap_or_else(|_| panic!("DOCX missing {name}"))
+                .read_to_string(&mut content)
+                .expect("DOCX XML should be readable");
+            content
+        };
+
+        let package_relationships = read_entry("_rels/.rels");
+        assert!(package_relationships.contains(
+            r#"Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml""#
+        ));
+        let document_relationships = read_entry("word/_rels/document.xml.rels");
+        assert!(document_relationships.contains(r#"Target="styles.xml""#));
+        let document = read_entry("word/document.xml");
+        assert!(document.contains("<w:sectPr>"));
+        assert!(document.contains("• Built reliable tools"));
+        assert!(!document.contains("<w:numPr>"));
+        assert!(read_entry("word/styles.xml").contains(r#"w:styleId="Heading1""#));
+        assert!(read_entry("[Content_Types].xml").contains(
+            r#"PartName="/word/styles.xml""#
+        ));
+
+        drop(archive);
+        fs::remove_file(output_path).expect("temporary DOCX should be removed");
+    }
+
+    #[test]
+    fn xml_escaping_removes_illegal_xml_control_characters() {
+        assert_eq!(escape_xml("A\u{1} & <B>"), "A &amp; &lt;B&gt;");
+    }
 }

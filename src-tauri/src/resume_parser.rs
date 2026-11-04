@@ -5,8 +5,8 @@
 //! ATS-optimized resume generation.
 
 use std::path::Path;
-use std::process::Command;
 use serde::{Deserialize, Serialize};
+use tauri::AppHandle;
 
 /// Represents the format of a resume file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -34,13 +34,26 @@ pub fn detect_format(path: &str) -> ResumeFormat {
 }
 
 /// Extract text from a PDF file using the bundled pdftotext sidecar.
-pub fn parse_pdf_text(path: &str) -> Result<String, String> {
-    let output = Command::new("sidecars/pdftotext")
+pub fn parse_pdf_text(path: &str, app: &AppHandle) -> Result<String, String> {
+    let pdf_path = Path::new(path)
+        .canonicalize()
+        .map_err(|error| format!("Failed to resolve PDF path: {}", error))?;
+    let working_directory = pdf_path
+        .parent()
+        .ok_or("PDF file has no parent directory")?;
+    let (pdftotext_path, mut command) =
+        crate::typst_engine::sidecar_command(app, "pdftotext", working_directory)?;
+    let output = command
         .arg("-layout")
-        .arg(path)
+        .arg(&pdf_path)
         .arg("-")
         .output()
-        .map_err(|e| format!("Failed to execute pdftotext: {}", e))?;
+        .map_err(|error| format!(
+            "Failed to execute bundled pdftotext at {} from {}: {}",
+            pdftotext_path.display(),
+            working_directory.display(),
+            error
+        ))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -124,12 +137,15 @@ pub fn parse_odt_text(path: &str) -> Result<String, String> {
 }
 
 /// Extract text from a resume file, auto-detecting format.
-pub fn extract_resume_text(path: &str) -> Result<(ResumeFormat, String), String> {
+pub fn extract_resume_text(
+    path: &str,
+    app: &AppHandle,
+) -> Result<(ResumeFormat, String), String> {
     let format = detect_format(path);
 
     match format {
         ResumeFormat::Pdf => {
-            let text = parse_pdf_text(path)?;
+            let text = parse_pdf_text(path, app)?;
             Ok((format, text))
         }
         ResumeFormat::Docx => {

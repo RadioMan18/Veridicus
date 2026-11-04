@@ -10,6 +10,7 @@ export default {
         aether: {
           bg: 'var(--aether-bg)',
           surface: 'var(--aether-surface)',
+          border: 'var(--aether-border)',
           'surface-border': 'var(--aether-border)',
           text: 'var(--aether-text)',
           'text-muted': 'var(--aether-text-muted)',
@@ -21,6 +22,7 @@ export default {
           'selected-fg': 'var(--aether-selected-fg)',
           success: 'var(--aether-success)',
           warning: 'var(--aether-warning)',
+          'warning-hover': 'var(--aether-warning-hover, var(--aether-warning))',
           error: 'var(--aether-error)',
           info: 'var(--aether-info)',
         },

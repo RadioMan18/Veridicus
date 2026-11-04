@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::PathBuf;
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 use uuid::Uuid;
@@ -24,6 +25,14 @@ pub struct SetupWizardState {
     pub total_steps: usize,
     pub steps: Vec<SetupStep>,
     pub completed: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SetupWizardData {
+    pub profile: Option<UserProfile>,
+    pub resume_content: String,
+    pub selected_ollama_models: Vec<String>,
+    pub presentation_rule: Option<PresentationRuleInput>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -58,20 +67,12 @@ pub fn get_setup_wizard_state(
 
     let conn = get_db_connection(db_path_str)?;
 
-    let setup_completed: bool = conn.query_row(
+    let setup_completed: Option<String> = conn.query_row(
         "SELECT value FROM app_settings WHERE key = 'setup_completed'",
         [],
         |row| row.get(0),
-    ).unwrap_or(false);
-
-    if setup_completed {
-        return Ok(SetupWizardState {
-            current_step: 5,
-            total_steps: 5,
-            steps: vec![],
-            completed: true,
-        });
-    }
+    ).optional().map_err(|e| format!("Failed to read setup status: {}", e))?;
+    let setup_completed = setup_completed.as_deref() == Some("true");
 
     let steps = vec![
         SetupStep {
@@ -85,38 +86,93 @@ pub fn get_setup_wizard_state(
             id: "profile".to_string(),
             title: "Your Professional Profile".to_string(),
             description: "Enter your name, contact info, and target roles".to_string(),
-            completed: false,
+            completed: setup_step_is_complete(&conn, "profile")?,
             required: true,
         },
         SetupStep {
             id: "resume".to_string(),
             title: "Master Resume".to_string(),
             description: "Upload or paste your master resume content".to_string(),
-            completed: false,
+            completed: setup_step_is_complete(&conn, "resume")?,
             required: true,
         },
         SetupStep {
             id: "claims".to_string(),
             title: "Verify Your Claims".to_string(),
             description: "Review and confirm your skills, metrics, and experience".to_string(),
-            completed: false,
+            completed: setup_step_is_complete(&conn, "claims")?,
             required: true,
         },
         SetupStep {
             id: "ollama".to_string(),
             title: "Local AI Models".to_string(),
             description: "Select Ollama models for generation and analysis".to_string(),
-            completed: false,
+            completed: setup_step_is_complete(&conn, "ollama")?,
+            required: true,
+        },
+        SetupStep {
+            id: "presentation".to_string(),
+            title: "Presentation Preferences".to_string(),
+            description: "Choose how resume details should be presented".to_string(),
+            completed: setup_step_is_complete(&conn, "presentation")?,
             required: true,
         },
     ];
 
+    let current_step = steps.iter().position(|step| !step.completed).unwrap_or(steps.len());
     Ok(SetupWizardState {
-        current_step: 1,
-        total_steps: 5,
+        current_step,
+        total_steps: steps.len(),
         steps,
-        completed: false,
+        completed: setup_completed,
     })
+}
+
+#[tauri::command]
+pub fn get_setup_wizard_data(
+    state: State<'_, AppState>
+) -> Result<SetupWizardData, String> {
+    let db_path_opt = state.db_path.lock().unwrap();
+    let db_path_str = db_path_opt.as_ref()
+        .ok_or("Database not initialized")?;
+    let conn = get_db_connection(db_path_str)?;
+
+    let profile_json: Option<String> = conn.query_row(
+        "SELECT value FROM app_settings WHERE key = 'user_profile'",
+        [],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Failed to read profile: {}", e))?;
+    let profile = profile_json
+        .map(|json| serde_json::from_str(&json).map_err(|e| format!("Failed to parse profile: {}", e)))
+        .transpose()?;
+
+    let resume_content = conn.query_row(
+        "SELECT value FROM app_settings WHERE key = 'master_resume'",
+        [],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Failed to read master resume: {}", e))?
+        .unwrap_or_default();
+
+    let models_json: Option<String> = conn.query_row(
+        "SELECT value FROM app_settings WHERE key = 'selected_ollama_models'",
+        [],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Failed to read selected models: {}", e))?;
+    let selected_ollama_models = models_json
+        .map(|json| serde_json::from_str(&json).map_err(|e| format!("Failed to parse selected models: {}", e)))
+        .transpose()?
+        .unwrap_or_default();
+
+    let rule_text: Option<String> = conn.query_row(
+        "SELECT rule_text FROM rules
+         WHERE kind = 'presentation' AND subject = 'resume' AND source LIKE 'setup-wizard%'
+         ORDER BY rowid DESC LIMIT 1",
+        [],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Failed to read presentation preferences: {}", e))?;
+    let presentation_rule = rule_text.map(|text| parse_presentation_rule(&text)).transpose()?;
+
+    Ok(SetupWizardData { profile, resume_content, selected_ollama_models, presentation_rule })
 }
 
 #[tauri::command]
@@ -193,9 +249,14 @@ pub fn save_claims(
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
 
-        conn.execute(
+        let inserted = conn.execute(
             "INSERT INTO claims (id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7)",
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM claims
+                 WHERE statement = ?2 AND evidence_source = ?3 AND confirmed_wording = ?4
+                   AND scope = ?5 AND category = ?6 AND status = 'confirmed'
+             )",
             [
                 id.as_str(),
                 claim.statement.as_str(),
@@ -206,7 +267,7 @@ pub fn save_claims(
                 now.as_str(),
             ],
         ).map_err(|e| format!("Failed to save claim: {}", e))?;
-        count += 1;
+        count += inserted;
     }
 
     update_setup_step(&conn, "claims")?;
@@ -227,21 +288,38 @@ pub fn save_presentation_rules(
 
     let mut count = 0;
     for rule in rules {
-        let id = Uuid::new_v4().to_string();
         let source = format!("setup-wizard {}", Utc::now().format("%Y-%m-%d"));
         let rule_text = format!(
             "section={},date_policy={},tenure_phrasing={},employer_neutral={}",
             rule.section, rule.date_policy, rule.tenure_phrasing, rule.employer_neutral_metrics
         );
 
-        conn.execute(
-            "INSERT INTO rules (id, kind, subject, rule_text, applies_to, source, active)
-             VALUES (?1, 'presentation', ?2, ?3, 'all', ?4, 1)",
-            [id.as_str(), rule.section.as_str(), rule_text.as_str(), source.as_str()],
-        ).map_err(|e| format!("Failed to save rule: {}", e))?;
+        let existing_id: Option<String> = conn.query_row(
+            "SELECT id FROM rules
+             WHERE kind = 'presentation' AND subject = ?1 AND applies_to = 'all'
+               AND source LIKE 'setup-wizard%'
+             ORDER BY rowid DESC LIMIT 1",
+            [rule.section.as_str()],
+            |row| row.get(0),
+        ).optional().map_err(|e| format!("Failed to check existing presentation rule: {}", e))?;
+
+        if let Some(id) = existing_id {
+            conn.execute(
+                "UPDATE rules SET rule_text = ?1, source = ?2, active = 1 WHERE id = ?3",
+                [rule_text.as_str(), source.as_str(), id.as_str()],
+            ).map_err(|e| format!("Failed to update presentation rule: {}", e))?;
+        } else {
+            let id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO rules (id, kind, subject, rule_text, applies_to, source, active)
+                 VALUES (?1, 'presentation', ?2, ?3, 'all', ?4, 1)",
+                [id.as_str(), rule.section.as_str(), rule_text.as_str(), source.as_str()],
+            ).map_err(|e| format!("Failed to save presentation rule: {}", e))?;
+        }
         count += 1;
     }
 
+    update_setup_step(&conn, "presentation")?;
     Ok(count)
 }
 
@@ -405,4 +483,34 @@ pub fn update_setup_step(conn: &rusqlite::Connection, step_id: &str) -> Result<(
         [format!("setup_step_{}", step_id)],
     ).map_err(|e| format!("Failed to update setup step: {}", e))?;
     Ok(())
+}
+
+fn setup_step_is_complete(conn: &rusqlite::Connection, step_id: &str) -> Result<bool, String> {
+    let value: Option<String> = conn.query_row(
+        "SELECT value FROM app_settings WHERE key = ?1",
+        [format!("setup_step_{}", step_id)],
+        |row| row.get(0),
+    ).optional().map_err(|e| format!("Failed to read setup step '{}': {}", step_id, e))?;
+    Ok(value.as_deref() == Some("true"))
+}
+
+fn parse_presentation_rule(rule_text: &str) -> Result<PresentationRuleInput, String> {
+    let values: std::collections::HashMap<&str, &str> = rule_text
+        .split(',')
+        .filter_map(|part| part.split_once('='))
+        .collect();
+    let required = |key: &str| {
+        values.get(key).copied()
+            .ok_or_else(|| format!("Presentation preference is missing '{}'", key))
+    };
+    let employer_neutral_metrics = required("employer_neutral")?
+        .parse::<bool>()
+        .map_err(|e| format!("Invalid employer-neutral preference: {}", e))?;
+
+    Ok(PresentationRuleInput {
+        section: required("section")?.to_string(),
+        date_policy: required("date_policy")?.to_string(),
+        tenure_phrasing: required("tenure_phrasing")?.to_string(),
+        employer_neutral_metrics,
+    })
 }
