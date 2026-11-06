@@ -29,8 +29,8 @@ export default function PrepView() {
   return (
     <div className="max-w-3xl space-y-4">
       <div>
-        <h2 className="text-xl font-bold text-aether-text">Prep</h2>
-        <p className="text-sm text-aether-text-muted">
+        <h2 className="text-section text-aether-text">Prep</h2>
+        <p className="text-body text-aether-text-muted">
           Research the company before the first call. Generated locally.
         </p>
       </div>
@@ -54,14 +54,14 @@ export default function PrepView() {
         </button>
       </div>
 
-      {error && <p className="text-sm text-aether-error">{error}</p>}
+      {error && <p className="text-body text-aether-error">{error}</p>}
 
       {output ? (
         <section className="rounded-xl border border-aether-border bg-aether-surface p-6">
           <Markdown content={output} />
         </section>
       ) : (
-        <p className="text-sm text-aether-text-muted">
+        <p className="text-body text-aether-text-muted">
           Nothing yet. Enter a company to generate a briefing with recent context, likely interview
           themes and talking points.
         </p>

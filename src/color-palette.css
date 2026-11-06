@@ -11,6 +11,8 @@
     --aether-primary: #7BB3E8;
     --aether-primary-hover: #639FD8;
     --aether-primary-fg: #0F2840;
+    /* Same hue, dark enough to use as text on a light surface (5.4:1 on #FFFFFF). */
+    --aether-primary-ink: #2A6BA6;
 
     /* Selectable / Retained State - Pastel Sage Green */
     --aether-selected: #A4D8B8;
@@ -28,7 +30,7 @@
     /* Backgrounds & Surfaces (Warm Dark Mode) */
     --aether-bg: #16181B;
     --aether-surface: #202328;
-    --aether-border: #6E737C;
+    --aether-border: #7A808A;
     --aether-text: #F1F3F5;
     --aether-text-muted: #9BA1A9;
 
@@ -36,6 +38,7 @@
     --aether-primary: #82BCF4;
     --aether-primary-hover: #98C8F7;
     --aether-primary-fg: #09192A;
+    --aether-primary-ink: #A3CFF9;
 
     /* Selectable / Retained State - Pastel Sage Green (Dark Adjusted) */
     --aether-selected: #345C44;

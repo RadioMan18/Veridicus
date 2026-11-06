@@ -16,8 +16,8 @@ export default function SettingsView({
   return (
     <div className="max-w-3xl space-y-4">
       <div>
-        <h2 className="text-xl font-bold text-aether-text">Settings</h2>
-        <p className="text-sm text-aether-text-muted">
+        <h2 className="text-section text-aether-text">Settings</h2>
+        <p className="text-body text-aether-text-muted">
           Local models, workspace and first-run setup.
         </p>
       </div>
@@ -25,8 +25,8 @@ export default function SettingsView({
       <section className="divide-y divide-aether-border rounded-xl border border-aether-border bg-aether-surface">
         <div className="flex flex-wrap items-center justify-between gap-3 p-4">
           <div>
-            <p className="text-sm text-aether-text">Local models</p>
-            <p className="text-xs text-aether-text-muted">
+            <p className="text-row text-aether-text">Local models</p>
+            <p className="text-meta text-aether-text-muted">
               Choose the fast and deep Ollama models used for generation.
             </p>
           </div>
@@ -40,8 +40,8 @@ export default function SettingsView({
 
         <div className="flex flex-wrap items-center justify-between gap-3 p-4">
           <div>
-            <p className="text-sm text-aether-text">Setup guide</p>
-            <p className="text-xs text-aether-text-muted">
+            <p className="text-row text-aether-text">Setup guide</p>
+            <p className="text-meta text-aether-text-muted">
               {setupComplete
                 ? 'Completed. Reopen to review your profile and claims.'
                 : 'Not finished yet — import your resume and confirm claims.'}

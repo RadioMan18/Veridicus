@@ -100,6 +100,38 @@ pub fn append_daily_log(activity: &str) -> Result<(), String> {
     fs::write(&log_path, content).map_err(|e| format!("Failed to update daily log: {}", e))
 }
 
+#[derive(Serialize, Debug, Clone)]
+pub struct TrustStatus {
+    pub ollama_online: bool,
+    pub model: Option<String>,
+    pub last_commit_seconds: Option<i64>,
+}
+
+/// Quiet trust signals for the top bar: whether Ollama answers, which model is
+/// selected, and how recently the workspace committed.
+#[tauri::command]
+pub fn get_trust_status(state: State<'_, AppState>) -> Result<TrustStatus, String> {
+    let ollama_online = crate::ollama::ollama_health_check().unwrap_or(false);
+    let model = crate::ollama::get_ollama_config(state)
+        .ok()
+        .and_then(|config| config.deep_model.or(config.fast_model));
+
+    let last_commit_seconds = dirs::document_dir().and_then(|docs| {
+        let repo = Repository::open(docs.join("CareerOS")).ok()?;
+        let mut revwalk = repo.revwalk().ok()?;
+        revwalk.push_head().ok()?;
+        let oid = revwalk.next()?.ok()?;
+        let commit = repo.find_commit(oid).ok()?;
+        Some(chrono::Utc::now().timestamp() - commit.time().seconds())
+    });
+
+    Ok(TrustStatus {
+        ollama_online,
+        model,
+        last_commit_seconds,
+    })
+}
+
 #[tauri::command]
 pub fn get_workspace_status(state: State<'_, AppState>) -> Result<WorkspaceStatus, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;

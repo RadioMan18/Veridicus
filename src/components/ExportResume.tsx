@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import Dialog from './Dialog';
+import { pushToast } from './Toaster';
 
 interface ExportResumeProps {
   isOpen: boolean;
@@ -13,6 +15,7 @@ const FALLBACK_MARKDOWN =
 export default function ExportResume({ isOpen, initialFormat, onClose }: ExportResumeProps) {
   const [format, setFormat] = useState<'pdf' | 'docx' | 'odt'>('pdf');
   const [status, setStatus] = useState<string>('');
+  const [statusKind, setStatusKind] = useState<'ok' | 'error' | 'info'>('info');
   const [loading, setLoading] = useState(false);
   const [markdown, setMarkdown] = useState('');
 
@@ -32,6 +35,7 @@ export default function ExportResume({ isOpen, initialFormat, onClose }: ExportR
         if (!cancelled) {
           setMarkdown(FALLBACK_MARKDOWN);
           setStatus(`Could not load master resume: ${err.message || String(err)}`);
+          setStatusKind('error');
         }
       }
     })();
@@ -43,18 +47,20 @@ export default function ExportResume({ isOpen, initialFormat, onClose }: ExportR
 
   const exportResume = async () => {
     if (!markdown.trim()) {
-      setStatus('Nothing to export. Import a resume with /resume first.');
+      setStatus('Nothing to export. Import a resume first, then export.');
+      setStatusKind('error');
       return;
     }
 
     setLoading(true);
-    setStatus('Checking ATS compliance...');
+    setStatus('Checking ATS compliance…');
+    setStatusKind('info');
 
     try {
       const report: any = await invoke('check_ats_compliance', { markdown });
       const warnings: string[] = report.suggestions || [];
 
-      setStatus('Exporting...');
+      setStatus('Exporting…');
       const result: any = await invoke('export_ats_resume', {
         markdown,
         format,
@@ -63,86 +69,112 @@ export default function ExportResume({ isOpen, initialFormat, onClose }: ExportR
 
       if (result.success) {
         const atsNote = report.passed ? '' : ` ATS warnings: ${warnings.join('; ')}`;
-        setStatus(`✓ Exported ${format.toUpperCase()}: ${result.output_path}${atsNote}`);
+        setStatus(`Exported ${format.toUpperCase()}${atsNote}`);
+        setStatusKind(atsNote ? 'info' : 'ok');
+        pushToast({
+          kind: 'success',
+          message: `Exported ${format.toUpperCase()} resume`,
+          detail: result.output_path,
+        });
       } else {
-        setStatus(`✗ Error: ${result.error_message}`);
+        setStatus(`Error: ${result.error_message}`);
+        setStatusKind('error');
+        pushToast({
+          kind: 'error',
+          message: `${format.toUpperCase()} export failed`,
+          detail: result.error_message,
+        });
       }
     } catch (err: any) {
-      setStatus(`Error: ${err.message || String(err)}`);
+      const message = err.message || String(err);
+      setStatus(`Error: ${message}`);
+      setStatusKind('error');
+      pushToast({ kind: 'error', message: 'Export failed', detail: message });
     } finally {
       setLoading(false);
     }
   };
 
-  if (!isOpen) {
-    return null;
-  }
-
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-aether-surface border border-aether-border rounded-xl w-full max-w-2xl overflow-hidden shadow-2xl">
-        <div className="p-4 border-b border-aether-border flex items-center justify-between">
-          <h3 className="text-lg font-bold text-aether-text">Export ATS Resume</h3>
+    <Dialog
+      isOpen={isOpen}
+      onClose={onClose}
+      title="Export resume"
+      description="ATS-safe PDF, DOCX or ODT built from your master resume."
+      size="md"
+      footer={
+        <>
           <button
             onClick={onClose}
-            className="text-aether-text-muted hover:text-aether-text"
+            className="rounded border border-aether-border bg-aether-bg px-4 py-2 text-body text-aether-text transition hover:bg-aether-surface"
           >
-            ✕
+            Cancel
           </button>
-        </div>
-        <div className="p-4">
-          <div className="mb-4">
-            <label className="block text-sm text-aether-text-muted mb-2">Format</label>
-            <div className="flex gap-2">
-              {formats.map((fmt) => (
-                <button
-                  key={fmt}
-                  onClick={() => setFormat(fmt)}
-                  className={`px-3 py-1 rounded text-xs border transition ${
-                    format === fmt
-                      ? 'bg-aether-primary text-aether-primary-fg border-aether-primary'
-                      : 'bg-aether-bg border-aether-border text-aether-text'
-                  }`}
-                >
-                  {fmt.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="mb-4">
-            <label className="block text-sm text-aether-text-muted mb-2">Resume Markdown</label>
-            <textarea
-              value={markdown}
-              onChange={(e) => setMarkdown(e.target.value)}
-              rows={10}
-              placeholder="Import a resume with /resume to load it here."
-              className="w-full bg-aether-bg border border-aether-border text-aether-text p-2 text-sm font-mono"
-            />
-          </div>
+          <button
+            onClick={exportResume}
+            disabled={loading}
+            className="rounded bg-aether-primary px-4 py-2 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
+          >
+            {loading ? 'Exporting…' : 'Export resume'}
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <div>
+          <p className="mb-2 text-meta font-medium uppercase tracking-wider text-aether-text-muted">
+            Format
+          </p>
           <div className="flex gap-2">
-            <button
-              onClick={exportResume}
-              disabled={loading}
-              className="flex-1 py-2 rounded bg-aether-primary text-aether-primary-fg hover:bg-aether-primary-hover font-medium disabled:opacity-50 transition"
-            >
-              {loading ? 'Exporting...' : 'Export Resume'}
-            </button>
-            <button
-              onClick={onClose}
-              className="px-4 py-2 rounded bg-aether-bg border border-aether-border text-aether-text hover:bg-aether-bg/50 transition"
-            >
-              Cancel
-            </button>
+            {formats.map((fmt) => (
+              <button
+                key={fmt}
+                onClick={() => setFormat(fmt)}
+                aria-pressed={format === fmt}
+                className={`rounded border px-3 py-1 text-body transition ${
+                  format === fmt
+                    ? 'border-aether-primary bg-aether-primary text-aether-primary-fg'
+                    : 'border-aether-border bg-aether-bg text-aether-text hover:border-aether-primary'
+                }`}
+              >
+                {fmt.toUpperCase()}
+              </button>
+            ))}
           </div>
-          {status && (
-            <div className="mt-4 p-3 rounded bg-aether-bg border border-aether-border text-sm">
-              <p className={`whitespace-pre-wrap ${status.startsWith('✓') ? 'text-aether-success' : 'text-aether-error'}`}>
-                {status}
-              </p>
-            </div>
-          )}
         </div>
+
+        <div>
+          <label
+            htmlFor="resume-markdown"
+            className="mb-2 block text-meta font-medium uppercase tracking-wider text-aether-text-muted"
+          >
+            Resume markdown
+          </label>
+          <textarea
+            id="resume-markdown"
+            value={markdown}
+            onChange={(e) => setMarkdown(e.target.value)}
+            rows={10}
+            placeholder="Import a resume to load it here."
+            className="w-full rounded border border-aether-border bg-aether-bg p-2 font-mono text-meta text-aether-text"
+          />
+        </div>
+
+        {status && (
+          <p
+            role={statusKind === 'error' ? 'alert' : 'status'}
+            className={`whitespace-pre-wrap rounded border border-aether-border bg-aether-bg p-3 text-body ${
+              statusKind === 'ok'
+                ? 'text-aether-success'
+                : statusKind === 'error'
+                  ? 'text-aether-error'
+                  : 'text-aether-text'
+            }`}
+          >
+            {status}
+          </p>
+        )}
       </div>
-    </div>
+    </Dialog>
   );
 }

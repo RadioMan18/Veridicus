@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import Dialog from './Dialog';
 import Markdown from './Markdown';
+import { pushToast } from './Toaster';
 
 interface BriefingViewerProps {
   isOpen: boolean;
@@ -11,12 +13,13 @@ interface BriefingViewerProps {
 
 type Format = 'txt' | 'md' | 'docx' | 'odt' | 'pdf';
 
+const FORMATS: Format[] = ['txt', 'md', 'docx', 'odt', 'pdf'];
+
 export default function BriefingViewer({ isOpen, onClose, title, markdown }: BriefingViewerProps) {
   const [format, setFormat] = useState<Format>('md');
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string>('');
-
-  const formats: Format[] = ['txt', 'md', 'docx', 'odt', 'pdf'];
+  const [statusKind, setStatusKind] = useState<'ok' | 'error' | 'info'>('info');
 
   const formatDate = () => {
     const d = new Date();
@@ -55,90 +58,73 @@ export default function BriefingViewer({ isOpen, onClose, title, markdown }: Bri
       const path =
         format === 'txt' || format === 'md' ? await saveTxtMd(format) : await saveViaExport(format);
       if (path) {
-        setStatus(`✓ Saved: ${path}`);
+        setStatus(`Saved ${format.toUpperCase()}`);
+        setStatusKind('ok');
+        pushToast({ kind: 'success', message: `Briefing saved as ${format.toUpperCase()}`, detail: path });
       } else {
         setStatus('Save cancelled.');
+        setStatusKind('info');
       }
     } catch (err: any) {
-      setStatus(`✗ Error: ${err.message || String(err)}`);
+      const message = err.message || String(err);
+      setStatus(`Error: ${message}`);
+      setStatusKind('error');
+      pushToast({ kind: 'error', message: 'Could not save briefing', detail: message });
     } finally {
       setLoading(false);
     }
   };
 
-  if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
-      <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-aether-border bg-aether-surface shadow-2xl">
-        <div className="flex items-center justify-between border-b border-aether-border p-4">
-          <h3 className="text-lg font-bold text-aether-text">
-            Company briefing — {title || 'Unknown'}
-          </h3>
-          <button
-            onClick={onClose}
-            className="text-aether-text-muted transition hover:text-aether-text"
-            aria-label="Close briefing"
-          >
-            ✕
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-auto p-6">
-          <Markdown content={markdown} />
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3 border-t border-aether-border p-4">
-          <label className="text-sm text-aether-text-muted">Format:</label>
-          <div className="flex gap-2">
-            {formats.map((fmt) => (
+    <Dialog
+      isOpen={isOpen}
+      onClose={onClose}
+      title={`Company briefing — ${title || 'Unknown'}`}
+      description="Generated on this machine from public sources."
+      size="lg"
+      footer={
+        <>
+          <div className="mr-auto flex items-center gap-2">
+            <span className="text-meta text-aether-text-muted">Save as</span>
+            {FORMATS.map((fmt) => (
               <button
                 key={fmt}
                 onClick={() => setFormat(fmt)}
-                className={`rounded border px-3 py-1 text-xs transition ${
+                aria-pressed={format === fmt}
+                className={`rounded border px-2.5 py-1 text-meta transition ${
                   format === fmt
                     ? 'border-aether-primary bg-aether-primary text-aether-primary-fg'
-                    : 'border-aether-border bg-aether-bg text-aether-text'
+                    : 'border-aether-border bg-aether-bg text-aether-text hover:border-aether-primary'
                 }`}
               >
                 {fmt.toUpperCase()}
               </button>
             ))}
           </div>
-          <div className="flex-1" />
           <button
             onClick={handleSave}
             disabled={loading}
-            className="rounded bg-aether-primary px-4 py-2 text-sm font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
+            className="rounded bg-aether-primary px-4 py-2 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
           >
-            {loading ? 'Saving...' : 'Save As...'}
+            {loading ? 'Saving…' : 'Save'}
           </button>
-          <button
-            onClick={onClose}
-            className="rounded border border-aether-border bg-aether-bg px-4 py-2 text-sm text-aether-text transition hover:bg-aether-surface"
-          >
-            Close
-          </button>
-        </div>
-
-        {status && (
-          <div className="px-4 pb-4">
-            <div className="rounded border border-aether-border bg-aether-bg p-2 text-xs">
-              <p
-                className={
-                  status.startsWith('\u2713')
-                    ? 'text-aether-success'
-                    : status.startsWith('\u2717')
-                      ? 'text-aether-error'
-                      : 'text-aether-text'
-                }
-              >
-                {status}
-              </p>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
+        </>
+      }
+    >
+      <Markdown content={markdown} />
+      {status && (
+        <p
+          className={`mt-4 rounded border border-aether-border bg-aether-bg p-2 text-meta ${
+            statusKind === 'ok'
+              ? 'text-aether-success'
+              : statusKind === 'error'
+                ? 'text-aether-error'
+                : 'text-aether-text-muted'
+          }`}
+        >
+          {status}
+        </p>
+      )}
+    </Dialog>
   );
 }

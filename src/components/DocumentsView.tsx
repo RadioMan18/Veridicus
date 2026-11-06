@@ -22,8 +22,8 @@ export default function DocumentsView({
   return (
     <div className="max-w-3xl space-y-5">
       <div>
-        <h2 className="text-xl font-bold text-aether-text">Documents</h2>
-        <p className="text-sm text-aether-text-muted">
+        <h2 className="text-section text-aether-text">Documents</h2>
+        <p className="text-body text-aether-text-muted">
           Your master resume is the source for every tailored application.
         </p>
       </div>
@@ -34,7 +34,7 @@ export default function DocumentsView({
           <button
             onClick={onImportResume}
             disabled={busy}
-            className="flex items-center gap-2 rounded bg-aether-selected px-3 py-2 text-sm font-medium text-aether-selected-fg transition hover:bg-aether-selected-border disabled:opacity-50"
+            className="flex items-center gap-2 rounded bg-aether-primary px-3 py-2 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
           >
             <Upload size={14} /> Import resume
           </button>
@@ -42,7 +42,7 @@ export default function DocumentsView({
             <button
               key={format}
               onClick={() => onExport(format)}
-              className="flex items-center gap-2 rounded border border-aether-border px-3 py-2 text-sm text-aether-text transition hover:bg-aether-bg"
+              className="flex items-center gap-2 rounded border border-aether-border px-3 py-2 text-body text-aether-text transition hover:bg-aether-bg"
             >
               <Download size={14} /> {format.toUpperCase()}
             </button>

@@ -5,8 +5,19 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CareerOS</title>
+    <style>
+      /* Pre-paint colours mirror the light aether tokens so the window never flashes
+         a different theme before the bundle loads. */
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background-color: #faf8f5;
+        color: #2d3139;
+      }
+    </style>
   </head>
-  <body class="bg-slate-950 text-slate-100">
+  <body class="bg-aether-bg text-aether-text">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

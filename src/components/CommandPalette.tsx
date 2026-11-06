@@ -408,10 +408,15 @@ export default function CommandPalette({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 pt-[10vh] backdrop-blur-sm">
+    <div
+      className="dialog-backdrop fixed inset-0 z-50 flex items-start justify-center bg-black/60 p-4 pt-[10vh] backdrop-blur-sm"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
+    >
       <div className="flex max-h-[80vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-aether-border bg-aether-surface shadow-2xl">
         <div className="flex items-center gap-2 border-b border-aether-border p-4">
-          <span className="font-mono font-bold text-aether-primary">&gt;_</span>
+          <span className="font-mono font-bold text-aether-primary-ink">&gt;_</span>
           <input
             type="text"
             value={command}
@@ -441,7 +446,7 @@ export default function CommandPalette({
                     index === selected ? 'bg-aether-primary/15' : 'hover:bg-aether-primary/10'
                   }`}
                 >
-                  <span className="w-24 shrink-0 font-mono text-sm text-aether-primary">
+                  <span className="w-24 shrink-0 font-mono text-meta text-aether-primary-ink">
                     {item.id}
                   </span>
                   <span className="min-w-0 flex-1">

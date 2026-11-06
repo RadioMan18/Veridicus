@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, ChevronLeft, ChevronRight, LoaderCircle, Sparkles, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
+import Dialog from './Dialog';
 
 interface SetupWizardProps {
   isOpen: boolean;
@@ -280,37 +281,16 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
   ][stage];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="setup-title"
-        className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-aether-border bg-aether-surface shadow-2xl"
-      >
-        <header className="flex items-start justify-between border-b border-aether-border px-6 py-5">
-          <div>
-            <div className="mb-2 flex items-center gap-2 text-sm text-aether-primary">
-              <Sparkles size={16} aria-hidden="true" />
-              <span>CareerOS setup</span>
-            </div>
-            <h2 id="setup-title" className="text-xl font-bold text-aether-text">
-              {stages[stage]?.title ?? 'Your workspace is ready'}
-            </h2>
-            <p className="mt-1 text-sm text-aether-text-muted">
-              {stages[stage]?.detail ?? 'You can return to the setup guide from the top bar at any time.'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={loading}
-            aria-label="Close setup guide"
-            className="rounded p-2 text-aether-text-muted transition hover:bg-aether-bg hover:text-aether-text focus-visible:outline focus-visible:outline-2 focus-visible:outline-aether-primary disabled:opacity-50"
-          >
-            <X size={18} />
-          </button>
-        </header>
-
+    <Dialog
+      isOpen
+      onClose={onClose}
+      title={stages[stage]?.title ?? 'Your workspace is ready'}
+      description={
+        stages[stage]?.detail ?? 'You can return to the setup guide from Settings at any time.'
+      }
+      size="lg"
+      bodyClassName="flex flex-col gap-4"
+    >
         <div className="border-b border-aether-border px-6 py-4">
           <div className="mb-2 flex justify-between text-xs text-aether-text-muted">
             <span>{stage < stages.length ? `Step ${stage + 1} of ${stages.length}` : 'Setup complete'}</span>
@@ -651,7 +631,7 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
           )}
         </div>
 
-        <footer className="flex items-center justify-between border-t border-aether-border px-6 py-4">
+        <footer className="sticky bottom-0 -mx-6 -mb-4 flex items-center justify-between border-t border-aether-border bg-aether-surface px-6 py-4">
           <div>
             {stage > 0 && stage < stages.length ? (
               <button
@@ -705,7 +685,6 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
             )}
           </button>
         </footer>
-      </section>
-    </div>
+    </Dialog>
   );
 }

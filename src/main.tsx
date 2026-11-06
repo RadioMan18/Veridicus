@@ -1,6 +1,7 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react'
 import ReactDOM from 'react-dom/client'
 import AppShell from './components/AppShell'
+import { copyText } from './components/Toaster'
 import './index.css'
 
 interface Props {
@@ -28,22 +29,31 @@ class ErrorBoundary extends Component<Props, State> {
 
   public render() {
     if (this.state.hasError) {
+      const message = this.state.error?.message || String(this.state.error)
       return (
-        <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center p-8">
-          <div className="max-w-lg w-full bg-slate-900 border border-red-500/50 rounded-xl p-6 shadow-xl space-y-4">
-            <h1 className="text-xl font-bold text-red-400">Application Error</h1>
-            <p className="text-sm text-slate-300">
+        <div className="flex min-h-screen flex-col items-center justify-center bg-aether-bg p-8 text-aether-text">
+          <div className="w-full max-w-lg space-y-4 rounded-xl border border-aether-error/50 bg-aether-surface p-6 shadow-xl">
+            <h1 className="text-section font-semibold text-aether-error">Application Error</h1>
+            <p className="text-body text-aether-text-muted">
               CareerOS encountered an unexpected error while rendering:
             </p>
-            <pre className="p-3 bg-slate-950 border border-slate-800 rounded text-xs text-red-300 font-mono overflow-auto max-h-48">
-              {this.state.error?.message || String(this.state.error)}
+            <pre className="max-h-48 overflow-auto rounded border border-aether-border bg-aether-bg p-3 font-mono text-meta text-aether-error">
+              {message}
             </pre>
-            <button
-              onClick={() => window.location.reload()}
-              className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded text-sm font-medium transition"
-            >
-              Reload Application
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => window.location.reload()}
+                className="rounded bg-aether-primary px-4 py-2 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover"
+              >
+                Reload Application
+              </button>
+              <button
+                onClick={() => void copyText(message)}
+                className="rounded border border-aether-border px-4 py-2 text-body text-aether-text transition hover:bg-aether-bg"
+              >
+                Copy error
+              </button>
+            </div>
           </div>
         </div>
       )

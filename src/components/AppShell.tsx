@@ -20,6 +20,9 @@ import DashboardView from './DashboardView';
 import DocumentsView from './DocumentsView';
 import PrepView from './PrepView';
 import SettingsView from './SettingsView';
+import ShortcutSheet from './ShortcutSheet';
+import Toaster from './Toaster';
+import TrustStatus from './TrustStatus';
 
 interface SetupWizardState {
   completed: boolean;
@@ -41,6 +44,18 @@ const NAV: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
+const CHORDS: Record<string, View> = {
+  a: 'applications',
+  d: 'dashboard',
+  p: 'prep',
+  s: 'settings',
+};
+
+function isTypingTarget(target: EventTarget | null) {
+  const element = target as HTMLElement | null;
+  return Boolean(element && ['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName));
+}
+
 export default function AppShell() {
   const [view, setView] = useState<View>('dashboard');
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
@@ -51,6 +66,7 @@ export default function AppShell() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [setupOpen, setSetupOpen] = useState(false);
   const [setupComplete, setSetupComplete] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [briefingOpen, setBriefingOpen] = useState(false);
   const [briefingContent, setBriefingContent] = useState('');
   const [briefingTitle, setBriefingTitle] = useState('');
@@ -60,6 +76,7 @@ export default function AppShell() {
   const [isInitializing, setIsInitializing] = useState(true);
   const [initializationFailed, setInitializationFailed] = useState(false);
   const initializationPromise = useRef<Promise<void> | null>(null);
+  const chordPending = useRef(false);
 
   const openCommandPalette = (cmd: string = '') => {
     setInitialCommand(cmd);
@@ -133,6 +150,40 @@ export default function AppShell() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
+  // g-chords and the shortcut sheet. Dialogs own their own Escape/Tab behaviour.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (isTypingTarget(event.target)) return;
+
+      if (event.key === '?') {
+        event.preventDefault();
+        setShortcutsOpen(true);
+        return;
+      }
+
+      if (chordPending.current) {
+        chordPending.current = false;
+        const next = CHORDS[event.key.toLowerCase()];
+        if (next) {
+          event.preventDefault();
+          setView(next);
+        }
+        return;
+      }
+
+      if (event.key === 'g') {
+        chordPending.current = true;
+        window.setTimeout(() => {
+          chordPending.current = false;
+        }, 1200);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   const openResumeFile = async () => {
     try {
       await initializationPromise.current;
@@ -185,8 +236,8 @@ export default function AppShell() {
     <div className="flex h-screen overflow-hidden bg-aether-bg text-aether-text">
       <aside className="flex w-60 shrink-0 flex-col border-r border-aether-border bg-aether-surface">
         <div className="px-5 py-5">
-          <p className="text-lg font-bold leading-tight">CareerOS</p>
-          <p className="text-xs text-aether-text-muted">Local job search OS</p>
+          <p className="text-row font-bold leading-tight">CareerOS</p>
+          <p className="text-meta text-aether-text-muted">Local job search OS</p>
         </div>
 
         <nav className="flex-1 space-y-1 px-3">
@@ -198,7 +249,7 @@ export default function AppShell() {
                 key={item.id}
                 onClick={() => setView(item.id)}
                 aria-current={active ? 'page' : undefined}
-                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-body transition ${
                   active
                     ? 'bg-aether-primary/15 font-medium text-aether-text'
                     : 'text-aether-text-muted hover:bg-aether-bg hover:text-aether-text'
@@ -211,11 +262,17 @@ export default function AppShell() {
           })}
         </nav>
 
-        <div className="border-t border-aether-border p-3">
-          <p className="flex items-center gap-2 text-xs text-aether-text-muted">
+        <div className="space-y-1 border-t border-aether-border p-3">
+          <p className="flex items-center gap-2 text-meta text-aether-text-muted">
             <span className={`h-2 w-2 rounded-full ${statusTone}`} />
             {statusLabel}
           </p>
+          <button
+            onClick={() => setShortcutsOpen(true)}
+            className="text-meta text-aether-text-muted transition hover:text-aether-text"
+          >
+            Keyboard shortcuts (?)
+          </button>
         </div>
       </aside>
 
@@ -223,23 +280,21 @@ export default function AppShell() {
         <header className="flex items-center gap-3 border-b border-aether-border bg-aether-surface px-6 py-3">
           <button
             onClick={() => openCommandPalette('')}
-            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-aether-border bg-aether-bg px-3 py-2 text-sm text-aether-text-muted transition hover:border-aether-primary"
+            className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-aether-border bg-aether-bg px-3 py-2 text-body text-aether-text-muted transition hover:border-aether-primary"
           >
             <Search size={14} />
             <span className="truncate">Search or run a command</span>
-            <span className="ml-auto shrink-0 rounded border border-aether-border px-1.5 py-0.5 font-mono text-[10px]">
+            <span className="ml-auto shrink-0 rounded border border-aether-border px-1.5 py-0.5 font-mono text-meta">
               Ctrl K
             </span>
           </button>
           <button
             onClick={() => openCommandPalette('/apply ')}
-            className="flex shrink-0 items-center gap-2 rounded-lg bg-aether-primary px-4 py-2 text-sm font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover"
+            className="flex shrink-0 items-center gap-2 rounded-lg bg-aether-primary px-4 py-2 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover"
           >
             <Plus size={16} /> New application
           </button>
-          <span className="hidden shrink-0 rounded-full border border-aether-border px-2 py-1 text-xs text-aether-text-muted lg:inline">
-            Local only
-          </span>
+          <TrustStatus />
         </header>
 
         <main className="flex-1 overflow-y-auto p-6">
@@ -304,6 +359,8 @@ export default function AppShell() {
         markdown={briefingContent}
         onClose={() => setBriefingOpen(false)}
       />
+      <ShortcutSheet isOpen={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <Toaster />
     </div>
   );
 }

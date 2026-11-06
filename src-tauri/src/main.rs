@@ -54,6 +54,7 @@ pub fn main() {
         .invoke_handler(generate_handler![
             workspace::initialize_workspace,
             workspace::get_workspace_status,
+            workspace::get_trust_status,
             db::init_encrypted_database_cmd,
             db::verify_sqlcipher_cmd,
             db::verify_key_cmd,

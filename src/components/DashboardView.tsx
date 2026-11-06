@@ -16,16 +16,16 @@ export default function DashboardView({
   return (
     <div className="max-w-4xl space-y-5">
       <div>
-        <h2 className="text-xl font-bold text-aether-text">Dashboard</h2>
-        <p className="text-sm text-aether-text-muted">
+        <h2 className="text-section text-aether-text">Dashboard</h2>
+        <p className="text-body text-aether-text-muted">
           Everything runs on this machine. No account, no upload.
         </p>
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
         <section className="rounded-xl border border-aether-border bg-aether-surface p-5">
-          <h3 className="text-sm font-semibold text-aether-text">Apply to a posting</h3>
-          <p className="mt-1 text-xs text-aether-text-muted">
+          <h3 className="text-row font-semibold text-aether-text">Apply to a posting</h3>
+          <p className="mt-1 text-meta text-aether-text-muted">
             Paste a job URL. CareerOS scrapes it, tailors your resume and letter, then fact-checks
             both before anything is committed.
           </p>
@@ -41,8 +41,8 @@ export default function DashboardView({
         </section>
 
         <section className="rounded-xl border border-aether-border bg-aether-surface p-5">
-          <h3 className="text-sm font-semibold text-aether-text">Track what you sent</h3>
-          <p className="mt-1 text-xs text-aether-text-muted">
+          <h3 className="text-row font-semibold text-aether-text">Track what you sent</h3>
+          <p className="mt-1 text-meta text-aether-text-muted">
             Saved, applied, interviewing, offer, rejected — move each application through the
             pipeline and see who needs a follow-up.
           </p>
@@ -55,8 +55,8 @@ export default function DashboardView({
         </section>
 
         <section className="rounded-xl border border-aether-border bg-aether-surface p-5">
-          <h3 className="text-sm font-semibold text-aether-text">Prepare for the call</h3>
-          <p className="mt-1 text-xs text-aether-text-muted">
+          <h3 className="text-row font-semibold text-aether-text">Prepare for the call</h3>
+          <p className="mt-1 text-meta text-aether-text-muted">
             Generate a company briefing with talking points, or run a STAR-method mock interview.
           </p>
           <button
@@ -68,8 +68,8 @@ export default function DashboardView({
         </section>
 
         <section className="rounded-xl border border-aether-border bg-aether-surface p-5">
-          <h3 className="text-sm font-semibold text-aether-text">Keep your master resume</h3>
-          <p className="mt-1 text-xs text-aether-text-muted">
+          <h3 className="text-row font-semibold text-aether-text">Keep your master resume</h3>
+          <p className="mt-1 text-meta text-aether-text-muted">
             Import a DOCX, PDF or Markdown resume so claims are extracted once and reused
             everywhere.
           </p>
