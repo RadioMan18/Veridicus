@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-capability",
+  "description": "Minimal grants for the main window. App-defined commands are allowed by default and need no entries here; only the core event API used for live /apply progress is granted. Filesystem, dialog, shell and opener plugin commands are intentionally not granted.",
+  "windows": ["main"],
+  "permissions": ["core:event:default"]
+}

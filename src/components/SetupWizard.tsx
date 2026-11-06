@@ -233,8 +233,8 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
     try {
       if (selectedModels.length > 0) {
         await invoke('save_ollama_config', {
-          fast_model: selectedModels[0],
-          deep_model: selectedModels[1] ?? selectedModels[0],
+          fastModel: selectedModels[0],
+          deepModel: selectedModels[1] ?? selectedModels[0],
         });
       }
       const presentationRule: PresentationRule = {

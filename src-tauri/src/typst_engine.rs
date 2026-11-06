@@ -69,7 +69,10 @@ pub(crate) fn with_document_font_defaults(source: &str) -> String {
 
 fn markdown_to_typst(markdown: &str) -> String {
     let arena = comrak::Arena::new();
-    let root = comrak::parse_document(&arena, markdown, &comrak::Options::default());
+    let mut options = comrak::Options::default();
+    // GFM tables are common in imported resumes; without this they render as raw pipe text.
+    options.extension.table = true;
+    let root = comrak::parse_document(&arena, markdown, &options);
     let mut output = String::new();
     render_blocks(root, &mut output, 0);
     output
@@ -129,6 +132,37 @@ fn render_blocks<'a>(
                 output.push_str(&escape_typst_text(&html.literal));
                 output.push_str("\n\n");
             }
+            NodeValue::Table(_) => {
+                let mut rows: Vec<Vec<String>> = Vec::new();
+                for row in child.children() {
+                    let mut cells: Vec<String> = Vec::new();
+                    for cell in row.children() {
+                        let mut content = String::new();
+                        render_inlines(cell, &mut content);
+                        cells.push(content.trim().to_string());
+                    }
+                    if !cells.is_empty() {
+                        rows.push(cells);
+                    }
+                }
+                let columns = rows.iter().map(|row| row.len()).max().unwrap_or(0);
+                if columns > 0 {
+                    output.push_str(&format!(
+                        "#table(\n  columns: {},\n  inset: 4pt,\n  stroke: 0.4pt + rgb(\"#d4d4d8\"),\n",
+                        columns
+                    ));
+                    for row in &rows {
+                        output.push_str("  ");
+                        for index in 0..columns {
+                            output.push('[');
+                            output.push_str(row.get(index).map(String::as_str).unwrap_or(""));
+                            output.push_str("], ");
+                        }
+                        output.push('\n');
+                    }
+                    output.push_str(")\n\n");
+                }
+            }
             _ => {}
         }
     }
@@ -184,6 +218,118 @@ fn render_inlines<'a>(
             _ => render_inlines(child, output),
         }
     }
+}
+
+/// Normalize model-written resume markdown into structures the Typst renderer can lay out.
+///
+/// Models frequently emit literal bullet glyphs, whole-line bold pseudo-headings and
+/// category-prefixed bullets. Left alone these render as flat paragraphs of punctuation.
+pub(crate) fn polish_resume_markdown(markdown: &str) -> String {
+    use std::collections::HashSet;
+
+    let bold_only = regex::Regex::new(r"^\*\*([^*]+)\*\*$").unwrap();
+    let bold_label = regex::Regex::new(r"^\*\*([^*:]{2,80}):\*\*\s*").unwrap();
+    let year_range = regex::Regex::new(
+        r"((19|20)\d{2}|\d{1,2}/(19|20)\d{2})\s*[-\u{2013}\u{2014}]\s*((19|20)\d{2}|\d{1,2}/(19|20)\d{2}|[Pp]resent)",
+    )
+    .unwrap();
+    let bullet_glyph = regex::Regex::new(r"^[\u{2022}*]\s+").unwrap();
+
+    const SECTIONS: &[&str] = &[
+        "summary",
+        "professional summary",
+        "profile",
+        "core competencies",
+        "competencies",
+        "technical skills",
+        "skills",
+        "experience",
+        "professional experience",
+        "work experience",
+        "education",
+        "certifications",
+        "certifications & key achievements",
+        "key achievements",
+        "military service & education",
+        "military service",
+        "projects",
+        "awards",
+        "publications",
+    ];
+
+    let mut output: Vec<String> = Vec::new();
+    let mut seen_bullets: HashSet<String> = HashSet::new();
+    let mut first_content = true;
+
+    for raw in markdown.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            output.push(String::new());
+            continue;
+        }
+
+        // Literal bullet glyphs become real Markdown list items.
+        let mut line = bullet_glyph.replace(trimmed, "- ").to_string();
+
+        // Whole-line bold pseudo-headings become headings.
+        if let Some(captures) = bold_only.captures(&line) {
+            let text = captures.get(1).unwrap().as_str().trim();
+            let lower = text.to_lowercase();
+            let letters = text.chars().filter(|character| character.is_alphabetic()).count().max(1);
+            let uppercase = text.chars().filter(|character| character.is_uppercase()).count();
+            let uppercase_ratio = uppercase as f32 / letters as f32;
+            let heading = if first_content {
+                Some(format!("# {}", text))
+            } else if year_range.is_match(text) {
+                Some(format!("### {}", text))
+            } else if SECTIONS.contains(&lower.as_str()) || uppercase_ratio > 0.6 {
+                Some(format!("## {}", text))
+            } else {
+                None
+            };
+            if let Some(heading) = heading {
+                output.push(heading);
+                first_content = false;
+                continue;
+            }
+        }
+
+        if let Some(rest) = line.strip_prefix("- ") {
+            // Category labels bolted onto bullets read as keyword stuffing.
+            let stripped = bold_label.replace(rest, "").to_string();
+            if !stripped.trim().is_empty() {
+                line = format!("- {}", stripped.trim());
+            }
+
+            // Identical sentences under two employers read as fabrication; keep the first.
+            let key: String = line[2..]
+                .to_lowercase()
+                .chars()
+                .map(|character| {
+                    if character.is_alphanumeric() || character == ' ' {
+                        character
+                    } else {
+                        ' '
+                    }
+                })
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            if key.len() >= 25 && !seen_bullets.insert(key) {
+                continue;
+            }
+        }
+
+        first_content = false;
+        output.push(line);
+    }
+
+    let mut polished = output.join("\n");
+    while polished.contains("\n\n\n") {
+        polished = polished.replace("\n\n\n", "\n\n");
+    }
+    polished.trim().to_string()
 }
 
 fn escape_typst_text(text: &str) -> String {
@@ -415,10 +561,11 @@ pub fn analyze_visual_qa(
     // Check for orphan headings and broken wraps based on page content analysis
     // These are heuristic checks; full implementation would use pdftotext -bbox
     let page_count = png_paths.len();
-    if page_count > 1 {
-        // Heuristic: if last page has very little content, potential orphan heading
+    // Two-page resumes are expected; three or more usually means content spilled badly.
+    if page_count > 2 {
         flags.orphan_heading_flags.push(format!(
-            "Page {} may contain orphaned content - verify layout", page_count
+            "Document spans {} pages - verify the final page is not an orphan",
+            page_count
         ));
     }
 
@@ -552,5 +699,29 @@ mod tests {
     fn markdown_text_escapes_typst_markup_characters() {
         let rendered = markdown_to_typst("A #tag with 50% & [brackets].");
         assert!(rendered.contains(r"A \#tag with 50\% \& \[brackets\]."));
+    }
+}
+#[cfg(test)]
+mod polish_tests {
+    use super::{markdown_to_typst, polish_resume_markdown};
+
+    #[test]
+    fn tables_render_as_typst_tables_instead_of_pipe_text() {
+        let markdown = "| A | B |\n| --- | --- |\n| one | two |\n";
+        let typst = markdown_to_typst(markdown);
+        assert!(typst.contains("#table("));
+        assert!(!typst.contains("| ---"));
+    }
+
+    #[test]
+    fn resume_polish_normalizes_headings_bullets_and_duplicate_lines() {
+        let markdown = "**JANE DOE**\n\n**PROFESSIONAL EXPERIENCE**\n\n\u{2022} **Category Label:** Designed and maintained client-facing manuals for five regions.\n\n**Second Role (09/2020 \u{2013} 09/2022)**\n\n\u{2022} **Other Label:** Designed and maintained client-facing manuals for five regions.\n\n\u{2022} Taught instructor-led sessions for clinical staff.\n";
+        let polished = polish_resume_markdown(markdown);
+        assert!(polished.starts_with("# JANE DOE"));
+        assert!(polished.contains("## PROFESSIONAL EXPERIENCE"));
+        assert!(polished.contains("### Second Role (09/2020 \u{2013} 09/2022)"));
+        assert!(polished.contains("- Designed and maintained client-facing manuals for five regions."));
+        assert_eq!(polished.matches("Designed and maintained client-facing manuals").count(), 1);
+        assert!(polished.contains("- Taught instructor-led sessions"));
     }
 }

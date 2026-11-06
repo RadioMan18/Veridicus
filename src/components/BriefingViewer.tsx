@@ -1,7 +1,6 @@
-﻿import { useState } from 'react';
-import { save } from '@tauri-apps/plugin-dialog';
-import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import Markdown from './Markdown';
 
 interface BriefingViewerProps {
   isOpen: boolean;
@@ -24,29 +23,17 @@ export default function BriefingViewer({ isOpen, onClose, title, markdown }: Bri
     return d.toISOString().replace(/[:.]/g, '-').slice(0, 19);
   };
 
-  const safeName = (name: string) => {
-    return name.replace(/[^a-zA-Z0-9-_]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'Briefing';
-  };
+  const safeName = (name: string) =>
+    name.replace(/[^a-zA-Z0-9-_]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '') || 'Briefing';
 
+  // The save dialog and the file write both run in Rust: the webview has no dialog or
+  // filesystem plugin permissions, and it does not need them.
   const saveTxtMd = async (ext: 'txt' | 'md') => {
-    const defaultName = `${safeName(title)}_Prep_${formatDate()}.${ext}`;
-    const filePath = await save({
-      defaultPath: defaultName,
-      filters: [
-        {
-          name: ext.toUpperCase(),
-          extensions: [ext],
-        },
-      ],
+    const contents = ext === 'txt' ? markdown.replace(/[#*`_[\]]/g, '') : markdown;
+    return invoke<string | null>('save_text_via_dialog', {
+      defaultName: `${safeName(title)}_Prep_${formatDate()}.${ext}`,
+      contents,
     });
-    if (!filePath) return null;
-    if (ext === 'txt') {
-      const plain = markdown.replace(/[#*`_\[\]]/g, '');
-      await writeTextFile(filePath, plain);
-    } else {
-      await writeTextFile(filePath, markdown);
-    }
-    return filePath;
   };
 
   const saveViaExport = async (fmt: 'docx' | 'odt' | 'pdf') => {
@@ -65,18 +52,8 @@ export default function BriefingViewer({ isOpen, onClose, title, markdown }: Bri
     setLoading(true);
     setStatus('');
     try {
-      let path: string | null = null;
-      if (format === 'txt') {
-        path = await saveTxtMd('txt');
-      } else if (format === 'md') {
-        path = await saveTxtMd('md');
-      } else if (format === 'docx') {
-        path = await saveViaExport('docx');
-      } else if (format === 'odt') {
-        path = await saveViaExport('odt');
-      } else if (format === 'pdf') {
-        path = await saveViaExport('pdf');
-      }
+      const path =
+        format === 'txt' || format === 'md' ? await saveTxtMd(format) : await saveViaExport(format);
       if (path) {
         setStatus(`✓ Saved: ${path}`);
       } else {
@@ -92,38 +69,72 @@ export default function BriefingViewer({ isOpen, onClose, title, markdown }: Bri
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-aether-surface border border-aether-border rounded-xl w-full max-w-4xl overflow-hidden shadow-2xl max-h-[90vh] flex flex-col">
-        <div className="p-4 border-b border-aether-border flex items-center justify-between">
-          <h3 className="text-lg font-bold text-aether-text">Company Briefing - {title || 'Unknown'}</h3>
-          <button onClick={onClose} className="text-aether-text-muted hover:text-aether-text">✕</button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm">
+      <div className="flex max-h-[90vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-aether-border bg-aether-surface shadow-2xl">
+        <div className="flex items-center justify-between border-b border-aether-border p-4">
+          <h3 className="text-lg font-bold text-aether-text">
+            Company briefing — {title || 'Unknown'}
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-aether-text-muted transition hover:text-aether-text"
+            aria-label="Close briefing"
+          >
+            ✕
+          </button>
         </div>
-        <div className="p-4 flex-1 overflow-auto">
-          <pre className="whitespace-pre-wrap font-mono text-sm text-aether-text bg-aether-bg border border-aether-border rounded p-4 overflow-x-auto">{markdown}</pre>
+
+        <div className="flex-1 overflow-auto p-6">
+          <Markdown content={markdown} />
         </div>
-        <div className="p-4 border-t border-aether-border flex items-center gap-3">
+
+        <div className="flex flex-wrap items-center gap-3 border-t border-aether-border p-4">
           <label className="text-sm text-aether-text-muted">Format:</label>
           <div className="flex gap-2">
             {formats.map((fmt) => (
               <button
                 key={fmt}
                 onClick={() => setFormat(fmt)}
-                className={`px-3 py-1 rounded text-xs border transition ${format === fmt ? 'bg-aether-primary text-aether-primary-fg border-aether-primary' : 'bg-aether-bg border-aether-border text-aether-text'}`}
+                className={`rounded border px-3 py-1 text-xs transition ${
+                  format === fmt
+                    ? 'border-aether-primary bg-aether-primary text-aether-primary-fg'
+                    : 'border-aether-border bg-aether-bg text-aether-text'
+                }`}
               >
                 {fmt.toUpperCase()}
               </button>
             ))}
           </div>
           <div className="flex-1" />
-          <button onClick={handleSave} disabled={loading} className="px-4 py-2 rounded bg-aether-primary text-aether-primary-fg hover:bg-aether-primary-hover font-medium disabled:opacity-50 transition">
+          <button
+            onClick={handleSave}
+            disabled={loading}
+            className="rounded bg-aether-primary px-4 py-2 text-sm font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
+          >
             {loading ? 'Saving...' : 'Save As...'}
           </button>
-          <button onClick={onClose} className="px-4 py-2 rounded bg-aether-bg border border-aether-border text-aether-text hover:bg-aether-bg/50 transition">Close</button>
+          <button
+            onClick={onClose}
+            className="rounded border border-aether-border bg-aether-bg px-4 py-2 text-sm text-aether-text transition hover:bg-aether-surface"
+          >
+            Close
+          </button>
         </div>
+
         {status && (
           <div className="px-4 pb-4">
-            <div className="p-2 rounded bg-aether-bg border border-aether-border text-xs">
-              <p className={status.startsWith('\u2713') ? 'text-aether-success' : status.startsWith('\u2717') ? 'text-aether-error' : 'text-aether-text'}>{status}</p>
+            <div className="rounded border border-aether-border bg-aether-bg p-2 text-xs">
+              <p
+                className={
+                  status.startsWith('\u2713')
+                    ? 'text-aether-success'
+                    : status.startsWith('\u2717')
+                      ? 'text-aether-error'
+                      : 'text-aether-text'
+                }
+              >
+                {status}
+              </p>
             </div>
           </div>
         )}

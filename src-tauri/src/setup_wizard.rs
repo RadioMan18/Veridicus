@@ -349,13 +349,10 @@ pub fn complete_setup_wizard(
 
     update_setup_step(&conn, "ollama")?;
 
-    let workspace_root = PathBuf::from(db_path_str).parent().unwrap().to_path_buf();
-    let daily_log = workspace_root.join("daily-log.md");
-    let entry = format!("\n## {} - Setup Wizard Completed\n- User profile configured\n- Master resume saved\n- Claims verified\n- Ollama models selected: {}\n",
-        Utc::now().format("%Y-%m-%d"),
+    crate::workspace::append_daily_log(&format!(
+        "Setup Wizard completed - profile, master resume and confirmed claims saved; Ollama models: {}",
         ollama_models.join(", ")
-    );
-    fs::write(&daily_log, entry).map_err(|e| format!("Failed to update daily log: {}", e))?;
+    ))?;
 
     Ok(true)
 }

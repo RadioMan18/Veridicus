@@ -14,6 +14,7 @@ pub enum ResumeFormat {
     Pdf,
     Docx,
     Odt,
+    Text,
     Unknown,
 }
 
@@ -29,6 +30,7 @@ pub fn detect_format(path: &str) -> ResumeFormat {
         "pdf" => ResumeFormat::Pdf,
         "docx" => ResumeFormat::Docx,
         "odt" => ResumeFormat::Odt,
+        "txt" | "md" | "markdown" => ResumeFormat::Text,
         _ => ResumeFormat::Unknown,
     }
 }
@@ -156,8 +158,13 @@ pub fn extract_resume_text(
             let text = parse_odt_text(path)?;
             Ok((format, text))
         }
+        ResumeFormat::Text => {
+            let text = std::fs::read_to_string(path)
+                .map_err(|e| format!("Failed to read resume text file: {}", e))?;
+            Ok((format, text))
+        }
         ResumeFormat::Unknown => Err(format!(
-            "Unsupported file format: {}. Supported: .pdf, .docx, .odt",
+            "Unsupported file format: {}. Supported: .pdf, .docx, .odt, .md, .txt",
             path
         )),
     }
@@ -172,7 +179,8 @@ mod tests {
         assert_eq!(detect_format("resume.pdf"), ResumeFormat::Pdf);
         assert_eq!(detect_format("resume.docx"), ResumeFormat::Docx);
         assert_eq!(detect_format("resume.odt"), ResumeFormat::Odt);
-        assert_eq!(detect_format("resume.txt"), ResumeFormat::Unknown);
+        assert_eq!(detect_format("resume.txt"), ResumeFormat::Text);
+        assert_eq!(detect_format("resume.md"), ResumeFormat::Text);
         assert_eq!(detect_format("resume.PDF"), ResumeFormat::Pdf);
     }
 

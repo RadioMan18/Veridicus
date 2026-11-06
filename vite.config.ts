@@ -7,5 +7,10 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    watch: {
+      // Cargo holds locks on files under src-tauri/target, which makes
+      // chokidar throw EBUSY and kill the dev server while Tauri awaits it.
+      ignored: ['**/src-tauri/**'],
+    },
   },
 })

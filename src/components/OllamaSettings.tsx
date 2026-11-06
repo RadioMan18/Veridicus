@@ -53,8 +53,8 @@ export default function OllamaSettings({ isOpen, onClose }: OllamaSettingsProps)
     setStatus('Saving configuration...');
     try {
       await invoke('save_ollama_config', {
-        fast_model: selectedFast || null,
-        deep_model: selectedDeep || null,
+        fastModel: selectedFast || null,
+        deepModel: selectedDeep || null,
       });
       setStatus('✓ Configuration saved');
     } catch (err: any) {

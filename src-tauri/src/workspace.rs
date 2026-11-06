@@ -46,7 +46,10 @@ pub fn initialize_workspace(state: State<'_, AppState>) -> Result<WorkspaceStatu
 
     let daily_log = workspace_root.join("daily-log.md");
     if !daily_log.exists() {
-        let content = "# Daily Log\n\n## $(date -I) - CareerOS Initialized\n- Workspace created\n- SQLCipher Claims Ledger initialized\n";
+        let content = format!(
+            "# Daily Log\n\n## {} - CareerOS Initialized\n- Workspace created\n- SQLCipher Claims Ledger initialized\n",
+            chrono::Utc::now().format("%Y-%m-%d")
+        );
         fs::write(&daily_log, content).map_err(|e| e.to_string())?;
     }
 
@@ -63,6 +66,38 @@ pub fn initialize_workspace(state: State<'_, AppState>) -> Result<WorkspaceStatu
         initialized: true,
         git_active,
     })
+}
+
+/// Append an activity line to the daily log without truncating earlier entries.
+pub fn append_daily_log(activity: &str) -> Result<(), String> {
+    let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
+    let workspace_root = docs_dir.join("CareerOS");
+    fs::create_dir_all(&workspace_root)
+        .map_err(|e| format!("Failed to create workspace: {}", e))?;
+    let log_path = workspace_root.join("daily-log.md");
+
+    let mut content = if log_path.exists() {
+        fs::read_to_string(&log_path).map_err(|e| format!("Failed to read daily log: {}", e))?
+    } else {
+        "# Daily Log\n".to_string()
+    };
+
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+
+    let heading = format!("## {}", chrono::Utc::now().format("%Y-%m-%d"));
+    if !content.lines().any(|line| line.trim() == heading) {
+        content.push_str(&format!("\n{}\n", heading));
+    }
+
+    content.push_str(&format!(
+        "- {} - {}\n",
+        chrono::Local::now().format("%H:%M"),
+        activity.trim()
+    ));
+
+    fs::write(&log_path, content).map_err(|e| format!("Failed to update daily log: {}", e))
 }
 
 #[tauri::command]

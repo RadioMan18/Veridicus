@@ -7,56 +7,63 @@ interface ExportResumeProps {
   onClose: () => void;
 }
 
+const FALLBACK_MARKDOWN =
+  '# Your Name\n\n## Summary\n\n- Import your resume with /resume to edit and export it here.\n';
+
 export default function ExportResume({ isOpen, initialFormat, onClose }: ExportResumeProps) {
   const [format, setFormat] = useState<'pdf' | 'docx' | 'odt'>('pdf');
   const [status, setStatus] = useState<string>('');
   const [loading, setLoading] = useState(false);
-  const [markdown, setMarkdown] = useState('# Career Resume\n\n## Summary\n- Experienced professional\n\n## Experience\n- Professional experience\n\n## Skills\n- Professional skills\n\n## Education\n- Degree in relevant field\n');
+  const [markdown, setMarkdown] = useState('');
 
   const formats = ['pdf', 'docx', 'odt'] as const;
 
   useEffect(() => {
-    if (isOpen) {
-      setFormat(initialFormat);
-      setStatus('');
-    }
+    if (!isOpen) return;
+    setFormat(initialFormat);
+    setStatus('');
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const master: string = await invoke('get_master_resume');
+        if (!cancelled) setMarkdown(master);
+      } catch (err: any) {
+        if (!cancelled) {
+          setMarkdown(FALLBACK_MARKDOWN);
+          setStatus(`Could not load master resume: ${err.message || String(err)}`);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [isOpen, initialFormat]);
 
   const exportResume = async () => {
+    if (!markdown.trim()) {
+      setStatus('Nothing to export. Import a resume with /resume first.');
+      return;
+    }
+
     setLoading(true);
-    setStatus('Generating ATS-optimized resume...');
+    setStatus('Checking ATS compliance...');
 
     try {
-      // First check ATS compliance
-      const report: any = await invoke('check_ats_compliance', {
-        markdown,
-      });
+      const report: any = await invoke('check_ats_compliance', { markdown });
+      const warnings: string[] = report.suggestions || [];
 
-      if (!report.passed) {
-        setStatus(`⚠ ATS warnings: ${report.suggestions.join(', ')}. Proceeding anyway...`);
-      }
-
-      // Generate ATS-optimized markdown
-      const optimizedMd: string = await invoke('generate_ats_resume_markdown', {
-        claims: [],
-        jdText: '',
-        contactInfo: {
-          name: '',
-          phone: '',
-          email: '',
-          linkedIn: '',
-        },
-      });
-
-      // Export to selected format
+      setStatus('Exporting...');
       const result: any = await invoke('export_ats_resume', {
-        markdown: optimizedMd,
+        markdown,
         format,
-        outputDir: '',
+        outputDir: null,
       });
 
       if (result.success) {
-        setStatus(`✓ Resume exported as ${format.toUpperCase()}: ${result.output_path}`);
+        const atsNote = report.passed ? '' : ` ATS warnings: ${warnings.join('; ')}`;
+        setStatus(`✓ Exported ${format.toUpperCase()}: ${result.output_path}${atsNote}`);
       } else {
         setStatus(`✗ Error: ${result.error_message}`);
       }
@@ -103,11 +110,12 @@ export default function ExportResume({ isOpen, initialFormat, onClose }: ExportR
             </div>
           </div>
           <div className="mb-4">
-            <label className="block text-sm text-aether-text-muted mb-2">Markdown Content</label>
+            <label className="block text-sm text-aether-text-muted mb-2">Resume Markdown</label>
             <textarea
               value={markdown}
               onChange={(e) => setMarkdown(e.target.value)}
-              rows={6}
+              rows={10}
+              placeholder="Import a resume with /resume to load it here."
               className="w-full bg-aether-bg border border-aether-border text-aether-text p-2 text-sm font-mono"
             />
           </div>
@@ -128,7 +136,7 @@ export default function ExportResume({ isOpen, initialFormat, onClose }: ExportR
           </div>
           {status && (
             <div className="mt-4 p-3 rounded bg-aether-bg border border-aether-border text-sm">
-              <p className={status.startsWith('✓') ? 'text-aether-success' : 'text-aether-error'}>
+              <p className={`whitespace-pre-wrap ${status.startsWith('✓') ? 'text-aether-success' : 'text-aether-error'}`}>
                 {status}
               </p>
             </div>

@@ -9,10 +9,12 @@
 //!   5. Typst PDF compilation + visual QA
 //!   6. Update application_records, sync CSV, Git commit
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::State;
+use tauri::{Emitter, State};
+use std::sync::atomic::{AtomicBool, Ordering};
 use rfd::FileDialog;
 use crate::AppState;
 use crate::db::get_db_connection;
@@ -22,6 +24,139 @@ use crate::setup_wizard::{parse_claims_from_resume, update_setup_step};
 use uuid::Uuid;
 use chrono::Utc;
 
+/// Progress event emitted while the /apply pipeline runs, so the UI can show a timeline.
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplyProgress {
+    pub stage: String,
+    pub label: String,
+    pub status: String,
+    pub detail: Option<String>,
+}
+
+/// Set by `cancel_apply`; checked between pipeline stages.
+static APPLY_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+fn emit_stage(
+    app: &tauri::AppHandle,
+    stage: &str,
+    label: &str,
+    status: &str,
+    detail: Option<String>,
+) {
+    let _ = app.emit(
+        "apply-progress",
+        ApplyProgress {
+            stage: stage.to_string(),
+            label: label.to_string(),
+            status: status.to_string(),
+            detail,
+        },
+    );
+}
+
+/// Marks the current stage failed when the user cancelled, so the caller can return early.
+fn cancelled(result: &mut ApplyResult, app: &tauri::AppHandle, stage: &str, label: &str) -> bool {
+    if APPLY_CANCELLED.load(Ordering::SeqCst) {
+        emit_stage(app, stage, label, "failed", Some("Cancelled by user".to_string()));
+        result.error_message = Some("Cancelled by user".to_string());
+        return true;
+    }
+    false
+}
+
+#[tauri::command]
+pub fn cancel_apply() -> bool {
+    APPLY_CANCELLED.store(true, Ordering::SeqCst);
+    true
+}
+
+/// Commit an application only after the user approves its materials in the review gate.
+#[tauri::command]
+pub fn commit_application(application_id: String, state: State<'_, AppState>) -> Result<String, String> {
+    let db_path_str = {
+        let db_path_opt = state.db_path.lock().unwrap();
+        db_path_opt
+            .as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    let conn = get_db_connection(&db_path_str)?;
+    let (employer, role, date): (String, String, String) = conn
+        .query_row(
+            "SELECT employer, role, date FROM application_records WHERE id = ?1",
+            [application_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| format!("Application not found: {}", e))?;
+    crate::git_engine::commit_changes(
+        state.clone(),
+        format!("Apply: {} - {} ({})", employer, role, date),
+    )
+}
+
+/// Save text through a native save dialog. Done in Rust so the webview needs no
+/// dialog or filesystem plugin permissions.
+#[tauri::command]
+pub fn save_text_via_dialog(default_name: String, contents: String) -> Result<Option<String>, String> {
+    let selected = FileDialog::new().set_file_name(&default_name).save_file();
+    match selected {
+        Some(path) => {
+            fs::write(&path, contents).map_err(|e| format!("Failed to write file: {}", e))?;
+            Ok(Some(path.to_string_lossy().into_owned()))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Absolute folder holding one application's artifacts.
+#[tauri::command]
+pub fn get_application_folder(application_id: String) -> Result<String, String> {
+    let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
+    Ok(docs_dir
+        .join("CareerOS")
+        .join("applications")
+        .join(application_id)
+        .to_string_lossy()
+        .into_owned())
+}
+
+/// Reveal an application folder in the OS file manager.
+#[tauri::command]
+pub fn open_application_folder(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("Folder not found: {}", path));
+    }
+
+    #[cfg(target_os = "windows")]
+    let mut command = std::process::Command::new("explorer");
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = std::process::Command::new("xdg-open");
+
+    command
+        .arg(&path)
+        .spawn()
+        .map_err(|e| format!("Could not open folder: {}", e))?;
+    Ok(())
+}
+
+/// Read a rasterized page as a data URL, so the review screen can show documents
+/// without enabling the asset protocol or widening the CSP.
+#[tauri::command]
+pub fn get_artifact_preview(path: String) -> Result<String, String> {
+    let metadata = fs::metadata(&path).map_err(|e| format!("Cannot read {}: {}", path, e))?;
+    if metadata.len() > 6_000_000 {
+        return Err("This artifact is too large to preview".to_string());
+    }
+    let bytes = fs::read(&path).map_err(|e| format!("Cannot read {}: {}", path, e))?;
+    use base64::Engine;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 /// Input for the /apply workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyInput {
@@ -29,18 +164,27 @@ pub struct ApplyInput {
     pub employer: Option<String>,
     pub role: Option<String>,
     pub req_id: Option<String>,
+    /// Leave the git commit to the review gate instead of committing automatically.
+    #[serde(default)]
+    pub defer_commit: bool,
 }
 
 /// Result of the full /apply workflow.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApplyResult {
     pub application_id: String,
+    pub employer: String,
+    pub role: String,
     pub jd_scraped: bool,
     pub jd_path: Option<String>,
     pub gap_analysis: Option<crate::gap_analyzer::AnalysisResult>,
     pub resume_tailored: Option<crate::skills::SkillExecutionResult>,
     pub cover_letter: Option<crate::skills::SkillExecutionResult>,
     pub fact_check_report: Option<crate::fact_check::FactCheckReport>,
+    pub resume_fact_check_report: Option<crate::fact_check::FactCheckReport>,
+    pub resume_pdf_compiled: Option<crate::typst_engine::CompileResult>,
+    pub resume_visual_flags: Option<crate::typst_engine::VisualFlags>,
+    pub resume_pages_rasterized: Option<crate::typst_engine::RasterizeResult>,
     pub pdf_compiled: Option<crate::typst_engine::CompileResult>,
     pub pages_rasterized: Option<crate::typst_engine::RasterizeResult>,
     pub visual_flags: Option<crate::typst_engine::VisualFlags>,
@@ -58,12 +202,18 @@ pub async fn execute_apply_workflow(
 ) -> Result<ApplyResult, String> {
     let mut result = ApplyResult {
         application_id: String::new(),
+        employer: "Unknown".to_string(),
+        role: "Unknown".to_string(),
         jd_scraped: false,
         jd_path: None,
         gap_analysis: None,
         resume_tailored: None,
         cover_letter: None,
         fact_check_report: None,
+        resume_fact_check_report: None,
+        resume_pdf_compiled: None,
+        resume_visual_flags: None,
+        resume_pages_rasterized: None,
         pdf_compiled: None,
         pages_rasterized: None,
         visual_flags: None,
@@ -81,14 +231,19 @@ pub async fn execute_apply_workflow(
     };
     let conn = get_db_connection(&db_path_str)?;
 
+    APPLY_CANCELLED.store(false, Ordering::SeqCst);
+    emit_stage(&app, "scrape", "Scrape job posting", "active", None);
+
     // Create application_records row with PENDING_REVIEW status
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
     let workspace_root = docs_dir.join("CareerOS");
     let app_id = Uuid::new_v4().to_string();
 
     let now = Utc::now().format("%Y-%m-%d").to_string();
-    let employer = input.employer.clone().unwrap_or_else(|| "Unknown".to_string());
-    let role = input.role.clone().unwrap_or_else(|| "Unknown".to_string());
+    let mut employer = input.employer.clone().unwrap_or_else(|| "Unknown".to_string());
+    let mut role = input.role.clone().unwrap_or_else(|| "Unknown".to_string());
+    let app_dir = workspace_root.join("applications").join(&app_id);
+    let mut notes = format!("JD URL: {}", input.jd_url);
 
     conn.execute(
         "INSERT INTO application_records (id, employer, role, req_id, date, base_resume_version, materials_version, claims_used, approved_wording, gaps_named, salary_entered, status, notes)
@@ -105,7 +260,7 @@ pub async fn execute_apply_workflow(
             "",
             "",
             "",
-            format!("JD URL: {}", input.jd_url).as_str(),
+            notes.as_str(),
         ],
     ).map_err(|e| format!("Failed to create application record: {}", e))?;
 
@@ -116,25 +271,46 @@ pub async fn execute_apply_workflow(
     match &scrape_result {
         Ok(scrape) => {
             result.jd_scraped = true;
-            let app_dir = workspace_root.join("applications").join(&app_id);
             fs::create_dir_all(&app_dir).map_err(|e| format!("Failed to create app dir: {}", e))?;
             let jd_path = app_dir.join("job-description.md");
             fs::write(&jd_path, &scrape.description_md).map_err(|e| format!("Failed to write JD file: {}", e))?;
             result.jd_path = Some(jd_path.to_string_lossy().into_owned());
 
-            // Update application record with scraped info
+            // Prefer metadata supplied on the command line; fall back to the scraped posting.
+            employer = resolve_metadata(&input.employer, &scrape.company, "Unknown Company");
+            role = resolve_metadata(&input.role, &scrape.title, "Job Posting");
+            result.employer = employer.clone();
+            result.role = role.clone();
+            let scrape_detail = if scrape.requirements_md.trim().is_empty() {
+                format!("{} — {} (no requirements section found)", employer, role)
+            } else {
+                format!("{} — {}", employer, role)
+            };
+            emit_stage(&app, "scrape", "Scrape job posting", "done", Some(scrape_detail));
+            notes = format!("JD URL: {}\nJD scraped: {}\nEmployer: {}\nRole: {}", input.jd_url, now, employer, role);
+            if !scrape.requirements_md.trim().is_empty() && !scrape.requirements_md.contains("not found") {
+                fs::write(app_dir.join("job-requirements.md"), &scrape.requirements_md)
+                    .map_err(|e| format!("Failed to write JD requirements file: {}", e))?;
+            }
+
             conn.execute(
-                "UPDATE application_records SET notes = ?1 WHERE id = ?2",
-                [format!("JD URL: {}\nJD scraped: {}", input.jd_url, now).as_str(), app_id.as_str()],
+                "UPDATE application_records SET employer = ?1, role = ?2, notes = ?3 WHERE id = ?4",
+                [employer.as_str(), role.as_str(), notes.as_str(), app_id.as_str()],
             ).map_err(|e| format!("Failed to update application record: {}", e))?;
         }
         Err(e) => {
-            result.error_message = Some(format!("JD scrape failed: {}", e));
+            let message = format!("JD scrape failed: {}", e);
+            emit_stage(&app, "scrape", "Scrape job posting", "failed", Some(message.clone()));
+            result.error_message = Some(message);
             return Ok(result);
         }
     }
 
     // 2. Execute gap analysis
+    if cancelled(&mut result, &app, "gap", "Gap analysis against claims ledger") {
+        return Ok(result);
+    }
+    emit_stage(&app, "gap", "Gap analysis against claims ledger", "active", None);
     let gap_result = crate::gap_analyzer::analyze_job_gaps(
         scrape_result.as_ref().unwrap().description_md.clone(),
         app_id.clone(),
@@ -146,19 +322,33 @@ pub async fn execute_apply_workflow(
             result.gap_analysis = Some(gaps.clone());
         }
         Err(e) => {
+            emit_stage(&app, "gap", "Gap analysis against claims ledger", "failed", Some(e.clone()));
             result.error_message = Some(format!("Gap analysis failed: {}", e));
             return Ok(result);
         }
     }
 
     // 3. Execute guardrailed skills (resume-tailor and cover-letter)
-    // Use the JD text for context
-    let jd_text = scrape_result.as_ref().unwrap().description_md.clone();
+    // Pass the extracted requirements alongside the description so tailoring can target them.
+    let scraped = scrape_result.as_ref().unwrap();
+    let jd_text = if scraped.requirements_md.trim().is_empty() {
+        scraped.description_md.clone()
+    } else {
+        format!(
+            "{}\n\n## Requirements\n{}",
+            scraped.description_md, scraped.requirements_md
+        )
+    };
+
+    if cancelled(&mut result, &app, "resume", "Tailor resume") {
+        return Ok(result);
+    }
+    emit_stage(&app, "resume", "Tailor resume", "active", None);
 
     let resume_result = crate::skills::execute_skill(
         crate::skills::SkillExecutionInput {
             skill_id: "resume-tailor".to_string(),
-            application_id: Some(app_id.clone()),
+            application_id: None,
             jd_text: Some(jd_text.clone()),
             use_deep_model: true,
         },
@@ -168,15 +358,22 @@ pub async fn execute_apply_workflow(
     match resume_result {
         Ok(r) => result.resume_tailored = Some(r),
         Err(e) => {
+            emit_stage(&app, "resume", "Tailor resume", "failed", Some(e.clone()));
             result.error_message = Some(format!("Resume tailor failed: {}", e));
             return Ok(result);
         }
     }
 
+    if cancelled(&mut result, &app, "letter", "Write cover letter") {
+        return Ok(result);
+    }
+    emit_stage(&app, "resume", "Tailor resume", "done", None);
+    emit_stage(&app, "letter", "Write cover letter", "active", None);
+
     let cover_result = crate::skills::execute_skill(
         crate::skills::SkillExecutionInput {
             skill_id: "cover-letter".to_string(),
-            application_id: Some(app_id.clone()),
+            application_id: None,
             jd_text: Some(jd_text.clone()),
             use_deep_model: true,
         },
@@ -186,99 +383,118 @@ pub async fn execute_apply_workflow(
     match cover_result {
         Ok(r) => result.cover_letter = Some(r),
         Err(e) => {
+            emit_stage(&app, "letter", "Write cover letter", "failed", Some(e.clone()));
             result.error_message = Some(format!("Cover letter failed: {}", e));
             return Ok(result);
         }
     }
 
-    // 4. Run Fact-Check Pass on the cover letter
-    let cover_md = result.cover_letter.as_ref()
-        .map(|r| r.markdown_output.clone())
+    if cancelled(&mut result, &app, "fact-check", "Fact-check both documents") {
+        return Ok(result);
+    }
+    emit_stage(&app, "letter", "Write cover letter", "done", None);
+    emit_stage(&app, "fact-check", "Fact-check both documents", "active", None);
+
+    // 4. Run the fact-check pass on both generated documents
+    let confirmed_claim_ids: Vec<String> = result.gap_analysis.as_ref()
+        .map(|g| g.supported_claim_ids.clone())
         .unwrap_or_default();
 
-    if !cover_md.is_empty() {
-        // Get confirmed claim IDs from gap analysis
-        let confirmed_claim_ids: Vec<String> = result.gap_analysis.as_ref()
-            .map(|g| g.supported_claim_ids.clone())
-            .unwrap_or_default();
+    if let Some(resume_md) = result.resume_tailored.as_ref().map(|r| r.markdown_output.clone()) {
+        match crate::fact_check::run_fact_check_pass(
+            resume_md,
+            confirmed_claim_ids.clone(),
+            vec![], // never_claim_subjects - populated from rules in fact_check internally
+            Some(employer.clone()),
+            Some(role.clone()),
+            state.clone(),
+        ) {
+            Ok(report) => result.resume_fact_check_report = Some(report),
+            Err(e) => {
+                emit_stage(&app, "fact-check", "Fact-check both documents", "failed", Some(e.clone()));
+                result.error_message = Some(format!("Resume fact check failed: {}", e));
+                return Ok(result);
+            }
+        }
+    }
 
-        let fact_result = crate::fact_check::run_fact_check_pass(
-            cover_md.clone(),
+    if let Some(cover_md) = result.cover_letter.as_ref().map(|r| r.markdown_output.clone()) {
+        match crate::fact_check::run_fact_check_pass(
+            cover_md,
             confirmed_claim_ids,
             vec![], // never_claim_subjects - populated from rules in fact_check internally
             Some(employer.clone()),
             Some(role.clone()),
             state.clone(),
-        );
-
-        match fact_result {
-            Ok(fr) => result.fact_check_report = Some(fr),
+        ) {
+            Ok(report) => result.fact_check_report = Some(report),
             Err(e) => {
-                result.error_message = Some(format!("Fact check failed: {}", e));
+                emit_stage(&app, "fact-check", "Fact-check both documents", "failed", Some(e.clone()));
+                result.error_message = Some(format!("Cover letter fact check failed: {}", e));
                 return Ok(result);
             }
         }
     }
 
-    // 5. Compile PDF via Typst (using cover letter markdown as .typ content)
-    if let Some(cover_result) = &result.cover_letter {
-        let app_dir = workspace_root.join("applications").join(&app_id);
-        let typ_path = app_dir.join("cover-letter.typ");
-        fs::write(
-            &typ_path,
-            crate::typst_engine::with_document_font_defaults(&cover_result.markdown_output),
-        ).map_err(|e| format!("Failed to write Typst file: {}", e))?;
+    emit_stage(&app, "fact-check", "Fact-check both documents", "done", None);
+    if cancelled(&mut result, &app, "render", "Compile PDFs and run visual QA") {
+        return Ok(result);
+    }
+    emit_stage(&app, "render", "Compile PDFs and run visual QA", "active", None);
 
-        let pdf_result = crate::typst_engine::compile_typst_pdf(
-            typ_path.to_string_lossy().into_owned(),
-            app.clone(),
-        );
-        match pdf_result {
+    // 5. Compile both documents to PDF
+    if let Some(resume_md) = result.resume_tailored.as_ref().map(|r| r.markdown_output.clone()) {
+        match compile_document(&resume_md, "resume", &app_dir, &app) {
+            Ok(pdf) => result.resume_pdf_compiled = Some(pdf),
+            Err(e) => {
+                emit_stage(&app, "render", "Compile PDFs and run visual QA", "failed", Some(e.clone()));
+                result.error_message = Some(format!("Resume PDF failed: {}", e));
+                return Ok(result);
+            }
+        }
+    }
+
+    if let Some(pdf) = result.resume_pdf_compiled.as_ref().map(|pdf| pdf.pdf_path.clone()) {
+        match run_visual_qa("resume", &pdf, &app_dir, &employer, &role, &app) {
+            Ok((raster, flags)) => {
+                result.resume_pages_rasterized = Some(raster);
+                result.resume_visual_flags = Some(flags);
+            }
+            Err(e) => append_warning(
+                &mut result.error_message,
+                format!("Resume visual QA skipped: {}", e),
+            ),
+        }
+    }
+
+    if let Some(cover_md) = result.cover_letter.as_ref().map(|r| r.markdown_output.clone()) {
+        match compile_document(&cover_md, "cover-letter", &app_dir, &app) {
             Ok(pr) => {
-                result.pdf_compiled = Some(pr.clone());
-                if pr.success {
-                    // 6. Rasterize pages
-                    let raster_result = crate::typst_engine::rasterize_pdf_pages(
-                        pr.pdf_path.clone(),
-                        app_dir.to_string_lossy().into_owned(),
-                        app.clone(),
-                    );
-                    match raster_result {
-                        Ok(rr) => {
-                            result.pages_rasterized = Some(rr.clone());
+                let pdf_path = pr.pdf_path.clone();
+                result.pdf_compiled = Some(pr);
 
-                            // 7. Analyze visual QA
-                            let vqa_result = crate::typst_engine::analyze_visual_qa(
-                                pr.pdf_path,
-                                rr.png_paths,
-                                Some(employer.clone()),
-                                Some(role.clone()),
-                                app.clone(),
-                            );
-                            match vqa_result {
-                                Ok(vf) => result.visual_flags = Some(vf),
-                                Err(e) => {
-                                    result.error_message = Some(format!("Visual QA failed: {}", e));
-                                    return Ok(result);
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            result.error_message = Some(format!("Rasterize failed: {}", e));
-                            return Ok(result);
-                        }
+                // 6. Rasterize and analyze layout. QA is advisory: generated documents are kept.
+                match run_visual_qa("cover-letter", &pdf_path, &app_dir, &employer, &role, &app) {
+                    Ok((raster, flags)) => {
+                        result.pages_rasterized = Some(raster);
+                        result.visual_flags = Some(flags);
                     }
-                } else {
-                    result.error_message = Some(format!("Typst compile failed: {:?}", pr.error_message));
-                    return Ok(result);
+                    Err(e) => append_warning(
+                        &mut result.error_message,
+                        format!("Cover letter visual QA skipped: {}", e),
+                    ),
                 }
             }
             Err(e) => {
-                result.error_message = Some(format!("Typst compile error: {}", e));
+                emit_stage(&app, "render", "Compile PDFs and run visual QA", "failed", Some(e.clone()));
+                result.error_message = Some(format!("Cover letter PDF failed: {}", e));
                 return Ok(result);
             }
         }
     }
+
+    emit_stage(&app, "render", "Compile PDFs and run visual QA", "done", None);
+    emit_stage(&app, "save", "Save, sync ledger and commit", "active", None);
 
     // 8. Update application_records with results
     let claims_used = result.gap_analysis.as_ref()
@@ -287,22 +503,40 @@ pub async fn execute_apply_workflow(
     let gaps_named = result.gap_analysis.as_ref()
         .map(|g| g.identified_gaps.len().to_string())
         .unwrap_or_else(|| "0".to_string());
-    let approved_wording = result.cover_letter.as_ref()
-        .map(|r| r.markdown_output.clone())
-        .unwrap_or_default();
+    // This column records confirmed wording approved for reuse, not a generated document.
+    // Writing the letter here made later employer-consistency checks compare against prose.
+    let approved_wording = String::new();
 
     conn.execute(
         "UPDATE application_records SET claims_used = ?1, gaps_named = ?2, approved_wording = ?3, materials_version = ?4 WHERE id = ?5",
         [claims_used.as_str(), gaps_named.as_str(), approved_wording.as_str(), "master_v1", app_id.as_str()],
     ).map_err(|e| format!("Failed to update application record: {}", e))?;
 
-    // 9. Sync CSV mirror
+    // 9. Sync CSV mirror using the same 15-column header the workspace seeds.
     let csv_path = workspace_root.join("applications.csv");
-    let csv_entry = format!("{},{},{},{},{},{},{}\n",
-        app_id, now, employer, role, result.jd_scraped, input.jd_url, app_dir_to_str(&workspace_root, &app_id));
+    let folder_path = app_dir.to_string_lossy().into_owned();
+    let csv_header = "id,date,employer,role,status,job_url,folder_path,req_id,base_resume_version,materials_version,claims_used,approved_wording,gaps_named,salary_entered,notes\n";
+    let csv_entry = format!(
+        "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+        csv_field(&app_id),
+        csv_field(&now),
+        csv_field(&employer),
+        csv_field(&role),
+        csv_field("PENDING_REVIEW"),
+        csv_field(&input.jd_url),
+        csv_field(&folder_path),
+        csv_field(input.req_id.as_deref().unwrap_or("")),
+        csv_field("master_v1"),
+        csv_field("master_v1"),
+        csv_field(&claims_used),
+        csv_field(&approved_wording),
+        csv_field(&gaps_named),
+        csv_field(""),
+        csv_field(&notes),
+    );
 
     if !csv_path.exists() {
-        fs::write(&csv_path, "id,date,employer,role,jd_scraped,job_url,folder_path\n")
+        fs::write(&csv_path, csv_header)
             .map_err(|e| format!("Failed to create CSV: {}", e))?;
     }
     {
@@ -314,14 +548,37 @@ pub async fn execute_apply_workflow(
             .map_err(|e| format!("Failed to append CSV: {}", e))?;
     }
 
-    // 10. Trigger Git commit
+    // 10. Append to the daily log (non-fatal)
+    if let Err(error) = crate::workspace::append_daily_log(&format!("Applied: {} - {}", employer, role)) {
+        result.error_message = Some(format!(
+            "Application saved, but the daily log could not be updated: {}", error
+        ));
+    }
+
+    if input.defer_commit {
+        emit_stage(
+            &app,
+            "save",
+            "Save, sync ledger and commit",
+            "awaiting",
+            Some("Review the materials, then approve to commit".to_string()),
+        );
+        result.success = true;
+        return Ok(result);
+    }
+
+    // 11. Trigger Git commit
     let commit_result = crate::git_engine::commit_changes(
         state.clone(),
         format!("Apply: {} - {} ({})", employer, role, now),
     );
     match commit_result {
-        Ok(oid) => result.git_commit = Some(oid),
+        Ok(oid) => {
+            emit_stage(&app, "save", "Save, sync ledger and commit", "done", Some(format!("Committed {}", oid)));
+            result.git_commit = Some(oid);
+        }
         Err(e) => {
+            emit_stage(&app, "save", "Save, sync ledger and commit", "failed", Some(e.clone()));
             result.error_message = Some(format!("Git commit failed: {}", e));
             return Ok(result);
         }
@@ -331,9 +588,101 @@ pub async fn execute_apply_workflow(
     Ok(result)
 }
 
-/// Helper to build application directory path string.
-fn app_dir_to_str(workspace_root: &PathBuf, app_id: &str) -> String {
-    workspace_root.join("applications").join(app_id).to_string_lossy().into_owned()
+/// Resolve employer/role from the command line, falling back to the scraped posting.
+fn resolve_metadata(provided: &Option<String>, scraped: &str, placeholder: &str) -> String {
+    if let Some(value) = provided.as_ref().map(|value| value.trim()).filter(|value| !value.is_empty()) {
+        return value.to_string();
+    }
+    let scraped = scraped.trim();
+    if scraped.is_empty() || scraped == placeholder {
+        "Unknown".to_string()
+    } else {
+        scraped.to_string()
+    }
+}
+
+/// Quote a CSV field so commas, quotes and newlines cannot corrupt the mirror.
+fn csv_field(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+/// Append a non-fatal problem so the user still sees the result that was produced.
+fn append_warning(slot: &mut Option<String>, message: String) {
+    let combined = match slot.take() {
+        Some(existing) => format!("{}\n{}", existing, message),
+        None => message,
+    };
+    *slot = Some(combined);
+}
+
+/// Rasterize a compiled PDF into its own QA folder and analyze the pages.
+fn run_visual_qa(
+    stem: &str,
+    pdf_path: &str,
+    app_dir: &PathBuf,
+    employer: &str,
+    role: &str,
+    app: &tauri::AppHandle,
+) -> Result<(
+    crate::typst_engine::RasterizeResult,
+    crate::typst_engine::VisualFlags,
+), String> {
+    let qa_dir = app_dir.join(format!("qa-{}", stem));
+    let raster = crate::typst_engine::rasterize_pdf_pages(
+        pdf_path.to_string(),
+        qa_dir.to_string_lossy().into_owned(),
+        app.clone(),
+    )?;
+    let flags = crate::typst_engine::analyze_visual_qa(
+        pdf_path.to_string(),
+        raster.png_paths.clone(),
+        Some(employer.to_string()),
+        Some(role.to_string()),
+        app.clone(),
+    )?;
+    Ok((raster, flags))
+}
+
+/// Write a generated document as Markdown and Typst, then compile it to PDF.
+fn compile_document(
+    markdown: &str,
+    stem: &str,
+    app_dir: &PathBuf,
+    app: &tauri::AppHandle,
+) -> Result<crate::typst_engine::CompileResult, String> {
+    let markdown = if stem == "resume" {
+        crate::typst_engine::polish_resume_markdown(markdown)
+    } else {
+        markdown.to_string()
+    };
+    fs::write(app_dir.join(format!("{}.md", stem)), &markdown)
+        .map_err(|e| format!("Failed to write {}.md: {}", stem, e))?;
+    let typ_path = app_dir.join(format!("{}.typ", stem));
+    fs::write(
+        &typ_path,
+        crate::typst_engine::with_document_font_defaults(&markdown),
+    ).map_err(|e| format!("Failed to write {}.typ: {}", stem, e))?;
+
+    let compiled = crate::typst_engine::compile_typst_pdf(
+        typ_path.to_string_lossy().into_owned(),
+        app.clone(),
+    )?;
+    if compiled.success {
+        Ok(compiled)
+    } else {
+        Err(compiled
+            .error_message
+            .unwrap_or_else(|| "Typst compilation failed".to_string()))
+    }
+}
+
+/// Default export location: the workspace exports folder.
+fn default_export_dir() -> String {
+    dirs::document_dir()
+        .map(|docs| docs.join("CareerOS").join("exports"))
+        .unwrap_or_else(std::env::temp_dir)
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Run company research (/prep command).
@@ -430,19 +779,59 @@ pub async fn draft_followups(state: State<'_, AppState>) -> Result<String, Strin
     .collect();
 
     if apps.is_empty() {
-        return Ok("No pending applications requiring follow-up.".to_string());
+        return Ok("No applications awaiting follow-up. Mark an application as SUBMITTED or INTERVIEWING in the ledger first.".to_string());
     }
 
-    let ollama_config = crate::ollama::get_ollama_config(state);
-    let config = ollama_config.unwrap_or_default();
-    let _model = config.fast_model.clone().or_else(|| config.deep_model.clone()).unwrap_or_else(|| "llama3.2:latest".to_string());
+    let config = crate::ollama::get_ollama_config(state).unwrap_or_default();
+    let model = config.fast_model.clone()
+        .or_else(|| config.deep_model.clone())
+        .unwrap_or_else(|| "llama3.2:latest".to_string());
 
-    let mut followups = String::from("## Follow-up Drafts\n\n");
-    for (id, employer, role, date) in apps {
-        followups.push_str(&format!("### {}\n- Employer: {}\n- Role: {}\n- Applied: {}\n\n", id, employer, role, date));
+    const MAX_DRAFTS: usize = 10;
+    let mut drafts = String::from("## Follow-up Drafts\n\n");
+    let mut drafted = 0usize;
+
+    for (_, employer, role, date) in apps.iter().take(MAX_DRAFTS) {
+        let messages = vec![
+            crate::ollama::OllamaChatMessage {
+                role: "system".to_string(),
+                content: "You write brief, professional job-application follow-up emails. Return only the email body, under 150 words, with no subject line and no bracketed placeholders.".to_string(),
+            },
+            crate::ollama::OllamaChatMessage {
+                role: "user".to_string(),
+                content: format!(
+                    "Draft a follow-up email to {} about the {} role I applied for on {}. Reiterate interest, state one concrete value I bring, and ask about next steps. Do not invent facts beyond the employer, role, and application date.",
+                    employer, role, date
+                ),
+            },
+        ];
+
+        match crate::ollama::chat_with_ollama(model.clone(), messages, Some(0.4), Some(400), None) {
+            Ok(response) => {
+                drafts.push_str(&format!(
+                    "### {} - {}\n_Applied {}_\n\n{}\n\n",
+                    employer, role, date, response.message.content.trim()
+                ));
+                drafted += 1;
+            }
+            Err(error) => {
+                drafts.push_str(&format!(
+                    "### {} - {}\n\n_Drafting failed: {}_\n\n",
+                    employer, role, error
+                ));
+            }
+        }
     }
 
-    Ok(followups)
+    if apps.len() > MAX_DRAFTS {
+        drafts.push_str(&format!(
+            "_{} more application(s) were not drafted._\n",
+            apps.len() - MAX_DRAFTS
+        ));
+    }
+    let _ = crate::workspace::append_daily_log(&format!("Drafted {} follow-up email(s)", drafted));
+
+    Ok(drafts)
 }
 
 /// Generate weekly report (/weekly command).
@@ -739,11 +1128,32 @@ pub async fn export_ats_resume(
         }
     };
 
-    let out_dir = output_dir.unwrap_or_else(|| {
-        std::env::temp_dir().to_string_lossy().into_owned()
-    });
+    let out_dir = output_dir
+        .filter(|dir| !dir.trim().is_empty())
+        .unwrap_or_else(default_export_dir);
 
     crate::resume_exporter::export_ats_resume(&markdown, export_format, &out_dir, &app)
+}
+
+#[tauri::command]
+pub fn get_master_resume(state: State<'_, AppState>) -> Result<String, String> {
+    let db_path_str = {
+        let db_path_opt = state.db_path.lock().unwrap();
+        db_path_opt.as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    let conn = get_db_connection(&db_path_str)?;
+
+    conn.query_row(
+        "SELECT value FROM app_settings WHERE key = 'master_resume'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(|e| format!("Failed to load master resume: {}", e))?
+    .filter(|value| !value.trim().is_empty())
+    .ok_or_else(|| "No master resume found. Import one with /resume first.".to_string())
 }
 
 /// Contact information for resume header.
