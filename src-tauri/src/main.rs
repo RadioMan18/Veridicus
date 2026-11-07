@@ -15,6 +15,11 @@ mod scraper;
 mod gap_analyzer;
 mod skills;
 mod fact_check;
+mod guardrails;
+mod compliance;
+#[cfg(test)]
+mod guardrail_eval;
+mod scope_review;
 mod typst_engine;
 mod orchestrator;
 mod resume_parser;
@@ -63,6 +68,7 @@ pub fn main() {
             claims::list_claims,
             claims::update_claim,
             claims::delete_claim,
+            claims::verify_claim_evidence,
             claims::create_rule,
             claims::list_rules,
             claims::update_rule,
@@ -105,6 +111,13 @@ pub fn main() {
             orchestrator::execute_apply_workflow,
             orchestrator::cancel_apply,
             orchestrator::commit_application,
+            orchestrator::get_honesty_stats,
+            orchestrator::report_output_problem,
+            orchestrator::export_incident_log,
+            orchestrator::record_honesty_review,
+            orchestrator::get_ai_disclosure_state,
+            orchestrator::acknowledge_ai_disclosure,
+            orchestrator::acknowledge_output_disclosure,
             orchestrator::get_artifact_preview,
             orchestrator::open_application_folder,
             orchestrator::save_text_via_dialog,

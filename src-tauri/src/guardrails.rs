@@ -1,0 +1,930 @@
+//! Single enforcement point for the CareerOS honesty guardrails.
+//!
+//! The model proposes; these checks decide. Every generated document is evaluated
+//! against the active rules, the confirmed claims ledger, the persisted gaps, and
+//! the metric/scope fidelity requirements. The same evaluation runs again at commit
+//! time, so a blocking finding cannot reach an approved application without an
+//! explicit, recorded override.
+
+use std::collections::HashSet;
+
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+
+use crate::claims::Claim;
+use crate::fact_check;
+use crate::gap_analyzer::{AnalysisResult, RequirementTier};
+
+pub const RESUME: &str = "resume";
+pub const COVER_LETTER: &str = "cover_letter";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardrailFinding {
+    pub code: String,
+    pub message: String,
+    pub blocking: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GuardrailReport {
+    pub findings: Vec<GuardrailFinding>,
+    pub blocking: bool,
+    pub passed: bool,
+    pub checks_run: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleView {
+    pub kind: String,
+    pub subject: String,
+    pub rule_text: String,
+    pub applies_to: String,
+}
+
+/// A gap that must be named in the cover letter, loaded from the `gaps` table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RequiredGap {
+    #[serde(default)]
+    pub id: String,
+    pub requirement: String,
+    #[serde(default)]
+    pub requirement_tier: String,
+    pub adjacent_strength: String,
+    #[serde(default)]
+    pub status: String,
+}
+
+const SCOPE_ESCALATIONS: &[&str] = &[
+    "enterprise-wide",
+    "enterprise wide",
+    "company-wide",
+    "company wide",
+    "org-wide",
+    "org wide",
+    "organization-wide",
+    "organization wide",
+    "firm-wide",
+    "firm wide",
+    "across the company",
+    "across the organization",
+];
+
+const CONTRIBUTION_VERBS: &[&str] = &[
+    "contributed",
+    "contribute",
+    "helped",
+    "help",
+    "supported",
+    "support",
+    "assisted",
+    "assist",
+    "participated",
+    "participate",
+];
+
+const STOP_WORDS: &[&str] = &[
+    "the", "and", "for", "with", "that", "this", "from", "have", "has", "had", "was", "were",
+    "are", "will", "would", "can", "could", "should", "into", "onto", "over", "under", "about",
+    "their", "there", "they", "them", "your", "our", "its", "not", "but", "all", "any", "per",
+    "than", "then", "when", "where", "which", "who", "how", "why", "a", "an", "of", "to", "in",
+    "on", "at", "by", "as", "is", "be", "or", "it", "we", "you", "i", "role", "job",
+];
+
+fn normalize(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn content_words(text: &str) -> Vec<String> {
+    normalize(text)
+        .split_whitespace()
+        .filter(|word| word.len() >= 3 && !STOP_WORDS.contains(word))
+        .map(|word| word.to_string())
+        .collect()
+}
+
+fn content_word_overlap(text: &str, claim: &str) -> f32 {
+    let words = content_words(text);
+    if words.is_empty() {
+        return 0.0;
+    }
+    let claim_words: HashSet<String> = content_words(claim).into_iter().collect();
+    let matched = words
+        .iter()
+        .filter(|word| claim_words.contains(*word))
+        .count();
+    matched as f32 / words.len() as f32
+}
+
+fn contains_word(text: &str, word: &str) -> bool {
+    text.split_whitespace().any(|token| token == word)
+}
+
+/// True when a sentence or bullet can be traced to a confirmed claim, either by a
+/// four-word verbatim window or by substantial content-word overlap.
+pub fn is_grounded(text: &str, claims: &[Claim]) -> bool {
+    let normalized = normalize(text);
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+
+    for claim in claims {
+        let claim_normalized = normalize(&claim.confirmed_wording);
+        if words.len() >= 4 {
+            for window in words.windows(4) {
+                if claim_normalized.contains(&window.join(" ")) {
+                    return true;
+                }
+            }
+        }
+        if content_word_overlap(&normalized, &claim_normalized) >= 0.6 {
+            return true;
+        }
+    }
+
+    false
+}
+
+/// Claims that actually appear in the document, for the audit record. This is
+/// deliberately narrower than "all confirmed claims".
+pub fn cited_claim_ids(draft: &str, claims: &[Claim]) -> Vec<String> {
+    let units: Vec<String> = draft
+        .lines()
+        .flat_map(|line| line.split(|character| matches!(character, '.' | '!' | '?')))
+        .map(str::trim)
+        .filter(|unit| unit.len() >= 8)
+        .map(str::to_string)
+        .collect();
+
+    claims
+        .iter()
+        .filter(|claim| {
+            units
+                .iter()
+                .any(|unit| is_grounded(unit, std::slice::from_ref(*claim)))
+        })
+        .map(|claim| claim.id.clone())
+        .collect()
+}
+
+/// Advisory findings for cited claims whose provenance is too thin to audit
+/// meaningfully. They never block; they ask the user to strengthen the ledger.
+pub fn weak_provenance_findings(claims: &[Claim], cited: &[String]) -> Vec<GuardrailFinding> {
+    let mut findings = Vec::new();
+    for claim in claims {
+        if !cited.iter().any(|id| id == &claim.id) {
+            continue;
+        }
+        if !crate::claims::is_weak_provenance(claim) {
+            continue;
+        }
+        let kind = claim.evidence_type.trim().to_lowercase();
+        let mut missing = Vec::new();
+        if kind.is_empty() || kind == "unspecified" || kind == "other" {
+            missing.push("evidence type");
+        }
+        if claim.evidence_source.trim().len() < 4 {
+            missing.push("evidence reference");
+        }
+        if claim.evidence_sha256.trim().is_empty() {
+            missing.push("evidence fingerprint");
+        }
+        if claim.verified_by.trim().is_empty() {
+            missing.push("verifier");
+        }
+        findings.push(GuardrailFinding {
+            code: "weak_claim_provenance".to_string(),
+            message: format!(
+                "claim '{}' has weak provenance; missing {}",
+                claim.id,
+                missing.join(", ")
+            ),
+            blocking: false,
+        });
+    }
+    findings
+}
+
+/// True when the draft names a required gap in one sentence beside an adjacent strength.
+pub fn gap_named(draft: &str, requirement: &str) -> bool {
+    let draft_lower = draft.to_lowercase();
+    if draft_lower.contains(&requirement.to_lowercase()) {
+        return true;
+    }
+
+    let keywords = content_words(requirement);
+    if keywords.is_empty() {
+        return false;
+    }
+
+    draft_lower
+        .split(|character| matches!(character, '.' | '!' | '?' | '\n'))
+        .any(|sentence| {
+            let sentence = sentence.to_lowercase();
+            let hits = keywords
+                .iter()
+                .filter(|keyword| sentence.contains(keyword.as_str()))
+                .count();
+            hits * 100 / keywords.len() >= 50
+        })
+}
+
+fn best_matching_claim<'a>(sentence: &str, claims: &'a [Claim]) -> Option<&'a Claim> {
+    let sentence_normalized = normalize(sentence);
+    let words: Vec<&str> = sentence_normalized.split_whitespace().collect();
+    let mut best: Option<(&Claim, f32)> = None;
+
+    for claim in claims {
+        let claim_normalized = normalize(&claim.confirmed_wording);
+        let window_match = words
+            .windows(4)
+            .any(|window| claim_normalized.contains(&window.join(" ")));
+        let overlap = content_word_overlap(&sentence_normalized, &claim_normalized);
+        if !window_match && overlap < 0.4 {
+            continue;
+        }
+        let score = if window_match { 1.0 } else { overlap };
+        if best.map(|(_, best_score)| score > best_score).unwrap_or(true) {
+            best = Some((claim, score));
+        }
+    }
+
+    best.map(|(claim, _)| claim)
+}
+
+fn push(report: &mut GuardrailReport, code: &str, message: String, blocking: bool) {
+    report.findings.push(GuardrailFinding {
+        code: code.to_string(),
+        message,
+        blocking,
+    });
+}
+
+fn finalize(mut report: GuardrailReport) -> GuardrailReport {
+    report.blocking = report.findings.iter().any(|finding| finding.blocking);
+    report.passed = !report.blocking;
+    report
+}
+
+fn ungrounded_resume_bullets(draft: &str, claims: &[Claim]) -> Vec<String> {
+    let mut findings = Vec::new();
+    let mut section = String::new();
+
+    for line in draft.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            section = heading.trim().to_lowercase();
+            continue;
+        }
+        if trimmed.starts_with("###") || !trimmed.starts_with("- ") {
+            continue;
+        }
+        // Education and certification lines are credentials, not experience claims.
+        if matches!(section.as_str(), "education" | "certifications" | "certificates") {
+            continue;
+        }
+        let bullet = trimmed.trim_start_matches("- ").trim();
+        if bullet.len() < 20 {
+            continue;
+        }
+        if !is_grounded(bullet, claims) {
+            findings.push(format!(
+                "resume bullet is not supported by a confirmed claim: '{}'",
+                bullet
+            ));
+        }
+    }
+
+    findings
+}
+
+fn scope_findings(draft: &str, claims: &[Claim]) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    for sentence in draft.split(|character| matches!(character, '.' | '!' | '?' | '\n')) {
+        let sentence = sentence.trim();
+        if sentence.is_empty() {
+            continue;
+        }
+        let Some(claim) = best_matching_claim(sentence, claims) else {
+            continue;
+        };
+        let sentence_normalized = normalize(sentence);
+        let claim_normalized = normalize(&claim.confirmed_wording);
+
+        for term in SCOPE_ESCALATIONS {
+            if sentence_normalized.contains(term) && !claim_normalized.contains(term) {
+                findings.push(format!(
+                    "'{}' escalates the confirmed scope of '{}'",
+                    sentence, claim.confirmed_wording
+                ));
+            }
+        }
+
+        let draft_claims_leadership = contains_word(&sentence_normalized, "led")
+            || contains_word(&sentence_normalized, "lead")
+            || contains_word(&sentence_normalized, "owned");
+        let claim_is_contributory = CONTRIBUTION_VERBS
+            .iter()
+            .any(|verb| contains_word(&claim_normalized, verb));
+        let claim_claims_leadership = contains_word(&claim_normalized, "led")
+            || contains_word(&claim_normalized, "lead")
+            || contains_word(&claim_normalized, "owned");
+
+        if draft_claims_leadership && claim_is_contributory && !claim_claims_leadership {
+            findings.push(format!(
+                "'{}' claims ownership the confirmed claim does not: '{}'",
+                sentence, claim.confirmed_wording
+            ));
+        }
+    }
+
+    findings
+}
+
+/// Evaluate one document against the active rules and the confirmed record.
+pub fn evaluate_document(
+    kind: &str,
+    draft: &str,
+    claims: &[Claim],
+    rules: &[RuleView],
+    employer: Option<&str>,
+    role: Option<&str>,
+    required_gaps: &[RequiredGap],
+) -> GuardrailReport {
+    let mut report = GuardrailReport::default();
+    let draft_lower = draft.to_lowercase();
+
+    for rule in rules {
+        let subject = rule.subject.trim();
+        if subject.is_empty() {
+            continue;
+        }
+        report.checks_run += 1;
+        let subject_lower = subject.to_lowercase();
+
+        match rule.kind.as_str() {
+            "never_claim" => {
+                if draft_lower.contains(&subject_lower) {
+                    push(
+                        &mut report,
+                        "never_claim",
+                        format!("the draft mentions a never-claim subject: '{}'", subject),
+                        true,
+                    );
+                }
+            }
+            "ask_first" => {
+                if draft_lower.contains(&subject_lower) {
+                    push(
+                        &mut report,
+                        "ask_first",
+                        format!(
+                            "the draft uses '{}', which must be confirmed by the user first",
+                            subject
+                        ),
+                        true,
+                    );
+                }
+            }
+            "exact_wording" => {
+                if draft_lower.contains(&subject_lower) {
+                    let approved = rule.rule_text.trim();
+                    if !approved.is_empty() && !draft_lower.contains(&approved.to_lowercase()) {
+                        push(
+                            &mut report,
+                            "exact_wording",
+                            format!(
+                                "the approved wording for '{}' was altered: expected '{}'",
+                                subject, approved
+                            ),
+                            true,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let metrics = fact_check::verify_metrics(draft, claims);
+    report.checks_run += metrics.found.max(1);
+    for metric in &metrics.unverified {
+        push(
+            &mut report,
+            "unverified_metric",
+            format!("'{}' is not supported by any confirmed claim", metric),
+            true,
+        );
+    }
+    for violation in &metrics.qualifier_violations {
+        push(&mut report, "qualifier_dropped", violation.clone(), true);
+    }
+
+    for message in scope_findings(draft, claims) {
+        report.checks_run += 1;
+        push(&mut report, "scope_escalation", message, true);
+    }
+
+    if kind == COVER_LETTER {
+        for gap in required_gaps {
+            if gap.status == "accepted_by_user" {
+                continue;
+            }
+            report.checks_run += 1;
+            if !gap_named(draft, &gap.requirement) {
+                push(
+                    &mut report,
+                    "gap_not_named",
+                    format!("the letter must name this gap: {}", gap.requirement),
+                    true,
+                );
+            }
+        }
+
+        for (label, value) in [("employer", employer), ("role", role)] {
+            let Some(value) = value else {
+                continue;
+            };
+            let value = value.trim();
+            if value.is_empty() || value.eq_ignore_ascii_case("unknown") {
+                continue;
+            }
+            report.checks_run += 1;
+            if !draft_lower.contains(&value.to_lowercase()) {
+                push(
+                    &mut report,
+                    "role_company_mismatch",
+                    format!("the letter does not name the {}", label),
+                    true,
+                );
+            }
+        }
+    }
+
+    if kind == RESUME {
+        for message in ungrounded_resume_bullets(draft, claims) {
+            report.checks_run += 1;
+            push(&mut report, "ungrounded_bullet", message, true);
+        }
+    }
+
+    finalize(report)
+}
+
+pub fn merge(reports: Vec<GuardrailReport>) -> GuardrailReport {
+    let mut merged = GuardrailReport::default();
+    for report in reports {
+        merged.findings.extend(report.findings);
+        merged.checks_run += report.checks_run;
+    }
+    merged.blocking = merged.findings.iter().any(|finding| finding.blocking);
+    merged.passed = !merged.blocking;
+    merged
+}
+
+pub fn load_active_rules(conn: &Connection, kind: &str) -> Result<Vec<RuleView>, String> {
+    let mut statement = conn
+        .prepare("SELECT kind, subject, rule_text, applies_to FROM rules WHERE active = 1 AND applies_to IN ('all', ?1)")
+        .map_err(|error| format!("Failed to prepare rule query: {}", error))?;
+
+    let rules = statement
+        .query_map([kind], |row| {
+            Ok(RuleView {
+                kind: row.get(0)?,
+                subject: row.get(1)?,
+                rule_text: row.get(2)?,
+                applies_to: row.get(3)?,
+            })
+        })
+        .map_err(|error| format!("Failed to query rules: {}", error))?
+        .filter_map(|rule| rule.ok())
+        .collect();
+
+    Ok(rules)
+}
+
+pub fn fetch_confirmed_claims(conn: &Connection) -> Result<Vec<Claim>, String> {
+    let mut statement = conn
+        .prepare("SELECT id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at, evidence_type, evidence_sha256, verified_by FROM claims WHERE status = 'confirmed'")
+        .map_err(|error| format!("Failed to prepare claims query: {}", error))?;
+
+    let claims = statement
+        .query_map([], |row| {
+            Ok(Claim {
+                id: row.get(0)?,
+                statement: row.get(1)?,
+                evidence_source: row.get(2)?,
+                confirmed_wording: row.get(3)?,
+                scope: row.get(4)?,
+                category: row.get(5)?,
+                status: row.get(6)?,
+                last_confirmed_at: row.get(7)?,
+                evidence_type: row.get(8)?,
+                evidence_sha256: row.get(9)?,
+                verified_by: row.get(10)?,
+            })
+        })
+        .map_err(|error| format!("Failed to query claims: {}", error))?
+        .filter_map(|claim| claim.ok())
+        .collect();
+
+    Ok(claims)
+}
+
+fn tier_name(tier: &RequirementTier) -> &'static str {
+    match tier {
+        RequirementTier::MustHave => "must_have",
+        RequirementTier::NiceToHave => "nice_to_have",
+        RequirementTier::Gate => "gate",
+    }
+}
+
+/// Replace the persisted gaps for an application and return them for prompt use.
+pub fn persist_gaps(
+    conn: &Connection,
+    application_id: &str,
+    analysis: &AnalysisResult,
+) -> Result<Vec<RequiredGap>, String> {
+    conn.execute("DELETE FROM gaps WHERE application_id = ?1", [application_id])
+        .map_err(|error| format!("Failed to clear previous gaps: {}", error))?;
+
+    let mut saved = Vec::new();
+    for gap in &analysis.identified_gaps {
+        let id = uuid::Uuid::new_v4().to_string();
+        let tier = tier_name(&gap.requirement_tier);
+        conn.execute(
+            "INSERT INTO gaps (id, application_id, requirement, requirement_tier, matched_claim_id, adjacent_strength, letter_line, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open')",
+            [
+                id.as_str(),
+                application_id,
+                gap.requirement.as_str(),
+                tier,
+                gap.matched_claim_id.as_deref().unwrap_or(""),
+                gap.adjacent_strength.as_str(),
+                gap.proposed_letter_line.as_str(),
+            ],
+        )
+        .map_err(|error| format!("Failed to persist gap: {}", error))?;
+
+        saved.push(RequiredGap {
+            id,
+            requirement: gap.requirement.clone(),
+            requirement_tier: tier.to_string(),
+            adjacent_strength: gap.adjacent_strength.clone(),
+            status: "open".to_string(),
+        });
+    }
+
+    Ok(saved)
+}
+
+/// Gaps that must be named in the letter: must-have and gate items still open.
+pub fn required_gaps_for(
+    conn: &Connection,
+    application_id: &str,
+) -> Result<Vec<RequiredGap>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, requirement, requirement_tier, adjacent_strength, status
+             FROM gaps
+             WHERE application_id = ?1
+               AND status != 'accepted_by_user'
+               AND requirement_tier IN ('must_have', 'gate')",
+        )
+        .map_err(|error| format!("Failed to prepare gap query: {}", error))?;
+
+    let gaps = statement
+        .query_map([application_id], |row| {
+            Ok(RequiredGap {
+                id: row.get(0)?,
+                requirement: row.get(1)?,
+                requirement_tier: row.get(2)?,
+                adjacent_strength: row.get(3)?,
+                status: row.get(4)?,
+            })
+        })
+        .map_err(|error| format!("Failed to query gaps: {}", error))?
+        .filter_map(|gap| gap.ok())
+        .collect();
+
+    Ok(gaps)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        evaluate_document, gap_named, is_grounded, merge, RequiredGap, RuleView, COVER_LETTER,
+        RESUME,
+    };
+    use crate::claims::Claim;
+
+    fn claim(wording: &str) -> Claim {
+        Claim {
+            id: "claim-1".to_string(),
+            statement: wording.to_string(),
+            evidence_source: "resume".to_string(),
+            confirmed_wording: wording.to_string(),
+            scope: "within the team".to_string(),
+            category: "project".to_string(),
+            status: "confirmed".to_string(),
+            last_confirmed_at: "2026-01-01".to_string(),
+            evidence_type: "performance_review".to_string(),
+            evidence_sha256: "abc".to_string(),
+            verified_by: "Jane".to_string(),
+        }
+    }
+
+    fn rule(kind: &str, subject: &str, rule_text: &str) -> RuleView {
+        RuleView {
+            kind: kind.to_string(),
+            subject: subject.to_string(),
+            rule_text: rule_text.to_string(),
+            applies_to: "all".to_string(),
+        }
+    }
+
+    fn gap(requirement: &str) -> RequiredGap {
+        RequiredGap {
+            id: "gap-1".to_string(),
+            requirement: requirement.to_string(),
+            requirement_tier: "must_have".to_string(),
+            adjacent_strength: "adjacent work".to_string(),
+            status: "open".to_string(),
+        }
+    }
+
+    #[test]
+    fn never_claim_subject_blocks_the_document() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "Dear team, I hold a security clearance and delivered work.",
+            &[claim("Delivered work for the team")],
+            &[rule("never_claim", "security clearance", "")],
+            Some("Acme"),
+            Some("Engineer"),
+            &[],
+        );
+
+        assert!(report.blocking);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "never_claim"));
+    }
+
+    #[test]
+    fn ask_first_subject_blocks_until_confirmed() {
+        let report = evaluate_document(
+            RESUME,
+            "- Delivered work for the team using Kubernetes clusters.",
+            &[claim("Delivered work for the team")],
+            &[rule("ask_first", "kubernetes", "")],
+            None,
+            None,
+            &[],
+        );
+
+        assert!(report.blocking);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "ask_first"));
+    }
+
+    #[test]
+    fn altered_exact_wording_blocks() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "We cut planning time from eight hours to thirty minutes. Acme needs an Engineer.",
+            &[claim("Reduced planning time from 8 hours to 30 minutes")],
+            &[rule(
+                "exact_wording",
+                "planning time",
+                "from 8 hours to 30 minutes",
+            )],
+            Some("Acme"),
+            Some("Engineer"),
+            &[],
+        );
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "exact_wording"));
+    }
+
+    #[test]
+    fn dropped_metric_qualifier_blocks() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "That change reached 50% adoption across the team. Acme needs an Engineer.",
+            &[claim("Reached up to 50% adoption across the team")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[],
+        );
+
+        assert!(report.blocking);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "qualifier_dropped"));
+    }
+
+    #[test]
+    fn confirmed_qualifier_passes() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "That change reached up to 50% adoption across the team. Acme needs an Engineer.",
+            &[claim("Reached up to 50% adoption across the team")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[],
+        );
+
+        assert!(!report.blocking, "findings: {:?}", report.findings);
+    }
+
+    #[test]
+    fn scope_escalation_blocks() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "I built 10 internal tools for the team and led enterprise-wide adoption. Acme needs an Engineer.",
+            &[claim("Built 10 internal tools for the team")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[],
+        );
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "scope_escalation"));
+    }
+
+    #[test]
+    fn required_gap_must_be_named() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "I have relevant experience. Acme needs an Engineer.",
+            &[claim("Delivered relevant experience")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[gap("Kubernetes cluster administration")],
+        );
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "gap_not_named"));
+    }
+
+    #[test]
+    fn named_gap_passes() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "I have not administered Kubernetes clusters by name, but I ran comparable container infrastructure. Acme needs an Engineer.",
+            &[claim("Ran comparable container infrastructure")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[gap("Kubernetes cluster administration")],
+        );
+
+        assert!(!report.blocking, "findings: {:?}", report.findings);
+    }
+
+    #[test]
+    fn invented_resume_bullet_blocks_but_education_is_skipped() {
+        let draft = "# Jane\n\n## Experience\n- Built a telemetry pipeline used by twelve teams\n- Invented a company-wide platform nobody confirmed\n\n## Education\n- B.S. Computer Science, 2014";
+        let report = evaluate_document(
+            RESUME,
+            draft,
+            &[claim("Built a telemetry pipeline used by twelve teams")],
+            &[],
+            None,
+            None,
+            &[],
+        );
+
+        let ungrounded: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.code == "ungrounded_bullet")
+            .collect();
+        assert_eq!(ungrounded.len(), 1);
+        assert!(ungrounded[0].message.contains("Invented a company-wide platform"));
+    }
+
+    #[test]
+    fn letter_must_name_the_employer_and_role() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "I am interested in this position.",
+            &[claim("Interested in this position")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[],
+        );
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "role_company_mismatch"));
+    }
+
+    #[test]
+    fn reports_merge_without_losing_blocking_state() {
+        let clean = evaluate_document(
+            COVER_LETTER,
+            "Acme needs an Engineer. I delivered work.",
+            &[claim("Delivered work")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[],
+        );
+        let blocked = evaluate_document(
+            COVER_LETTER,
+            "Acme needs an Engineer. I hold a security clearance.",
+            &[claim("Delivered work")],
+            &[rule("never_claim", "security clearance", "")],
+            Some("Acme"),
+            Some("Engineer"),
+            &[],
+        );
+
+        let merged = merge(vec![clean, blocked]);
+        assert!(merged.blocking);
+        assert_eq!(merged.findings.len(), 1);
+    }
+
+    #[test]
+    fn grounding_and_gap_helpers_are_deterministic() {
+        assert!(is_grounded(
+            "Built a telemetry pipeline used by twelve teams",
+            &[claim("Built a telemetry pipeline used by twelve teams")]
+        ));
+        assert!(!is_grounded(
+            "Invented a company-wide platform nobody confirmed",
+            &[claim("Built a telemetry pipeline used by twelve teams")]
+        ));
+        assert!(gap_named(
+            "I have not administered Kubernetes clusters by name.",
+            "Kubernetes cluster administration"
+        ));
+        assert!(!gap_named(
+            "I have relevant experience.",
+            "Kubernetes cluster administration"
+        ));
+    }
+
+    #[test]
+    fn weak_provenance_is_advisory_and_limited_to_cited_claims() {
+        let mut weak = claim("Built a telemetry pipeline used by twelve teams");
+        weak.id = "weak".to_string();
+        weak.evidence_type = "unspecified".to_string();
+        weak.evidence_sha256.clear();
+        weak.verified_by.clear();
+        let mut uncited = weak.clone();
+        uncited.id = "uncited".to_string();
+
+        let findings = super::weak_provenance_findings(&[weak, uncited], &["weak".to_string()]);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].code, "weak_claim_provenance");
+        assert!(!findings[0].blocking);
+        assert!(findings[0].message.contains("evidence type"));
+    }
+
+    #[test]
+    fn cited_claim_ids_are_limited_to_claims_in_the_document() {
+        let mut first = claim("Built a telemetry pipeline used by twelve teams");
+        first.id = "c1".to_string();
+        let mut second = claim("Managed a team of five engineers");
+        second.id = "c2".to_string();
+
+        let cited = super::cited_claim_ids(
+            "## Experience\n- Built a telemetry pipeline used by twelve teams",
+            &[first, second],
+        );
+
+        assert_eq!(cited, vec!["c1".to_string()]);
+    }
+}

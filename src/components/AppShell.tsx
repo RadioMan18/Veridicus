@@ -20,6 +20,7 @@ import DashboardView from './DashboardView';
 import DocumentsView from './DocumentsView';
 import PrepView from './PrepView';
 import SettingsView from './SettingsView';
+import Dialog from './Dialog';
 import ShortcutSheet from './ShortcutSheet';
 import Toaster from './Toaster';
 import TrustStatus from './TrustStatus';
@@ -32,6 +33,12 @@ interface WorkspaceStatus {
   root_path: string;
   initialized: boolean;
   git_active: boolean;
+}
+
+interface AiDisclosureState {
+  acknowledged: boolean;
+  version: string;
+  text: string;
 }
 
 type View = 'dashboard' | 'applications' | 'documents' | 'prep' | 'settings';
@@ -73,6 +80,8 @@ export default function AppShell() {
   const [applyResult, setApplyResult] = useState<any | null>(null);
   const [paletteHistory, setPaletteHistory] = useState<PaletteEntry[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceStatus | null>(null);
+  const [disclosure, setDisclosure] = useState<AiDisclosureState | null>(null);
+  const [acknowledgingDisclosure, setAcknowledgingDisclosure] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const [initializationFailed, setInitializationFailed] = useState(false);
   const initializationPromise = useRef<Promise<void> | null>(null);
@@ -140,6 +149,33 @@ export default function AppShell() {
   }, []);
 
   useEffect(() => {
+    if (isInitializing || initializationFailed) return;
+    let active = true;
+    invoke<AiDisclosureState>('get_ai_disclosure_state')
+      .then((state) => {
+        if (active) setDisclosure(state);
+      })
+      .catch(() => {
+        // The disclosure gate is retried on the next launch; do not block the app.
+      });
+    return () => {
+      active = false;
+    };
+  }, [isInitializing, initializationFailed]);
+
+  const acknowledgeAiDisclosure = async () => {
+    setAcknowledgingDisclosure(true);
+    try {
+      await invoke('acknowledge_ai_disclosure');
+      setDisclosure((current) => (current ? { ...current, acknowledged: true } : current));
+    } catch (error: any) {
+      setResumeStatus(`Could not record the disclosure acknowledgement: ${error?.message || String(error)}`);
+    } finally {
+      setAcknowledgingDisclosure(false);
+    }
+  };
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         e.preventDefault();
@@ -190,9 +226,12 @@ export default function AppShell() {
       const result: any = await invoke('open_resume_file', { filePath: null });
       setResumeStatus(
         result.success
-          ? `✓ Resume imported. ${result.claims_imported} claims saved to the ledger.`
+          ? `✓ Resume imported. ${result.claims_imported} claims need confirmation in Setup before they can be used.`
           : `✗ Error: ${result.error_message}`,
       );
+      if (result.success && result.claims_imported > 0) {
+        setSetupOpen(true);
+      }
     } catch (err: any) {
       setResumeStatus(`Error: ${err.message || String(err)}`);
     }
@@ -360,6 +399,32 @@ export default function AppShell() {
         onClose={() => setBriefingOpen(false)}
       />
       <ShortcutSheet isOpen={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+      <Dialog
+        isOpen={Boolean(disclosure && !disclosure.acknowledged)}
+        onClose={() => {}}
+        title="Before you begin"
+        description="AI-assisted drafting and your responsibility"
+        size="md"
+        footer={
+          <button
+            onClick={acknowledgeAiDisclosure}
+            disabled={acknowledgingDisclosure}
+            data-autofocus
+            className="rounded bg-aether-primary px-4 py-2 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
+          >
+            {acknowledgingDisclosure ? 'Recording…' : 'I understand'}
+          </button>
+        }
+      >
+        <div className="space-y-3 text-sm leading-6 text-aether-text-muted">
+          <p>{disclosure?.text}</p>
+          <ul className="list-disc space-y-1 pl-5">
+            <li>Every generated document is a draft, not a verified fact.</li>
+            <li>Claims are checked for consistency, not for whether they are true.</li>
+            <li>Your acknowledgement is recorded in the workspace compliance record.</li>
+          </ul>
+        </div>
+      </Dialog>
       <Toaster />
     </div>
   );

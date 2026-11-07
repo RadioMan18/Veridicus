@@ -1,0 +1,13 @@
+Request ID,Item,Priority,Source,Format,Owner,Requested date,Due date,Received date,File name,SHA-256,Pages or files,Status,Accepted,Reason or notes
+ER-01,Signed adoption record,Priority,"AI-POLICY; AI-RACI; HONESTY-OBJECTIVES; STATEMENT-OF-APPLICABILITY; OPERATOR-ADOPTION-CHECKLIST",PDF or signed pages,,,,,,,Not issued,no,
+ER-02,Application population and sampled application folders,Priority,"Application records; audit/events.jsonl",CSV plus ZIP/folders,,,,,,,Not issued,no,
+ER-03,Claim and provenance population,Priority,"Claims ledger; verify_claim_evidence",CSV plus text output,,,,,,,Not issued,no,
+ER-04,Incident and concerns log,Priority,"reported-problems.jsonl; CSV export; concerns register",CSV plus detail records,,,,,,,Not issued,no,
+ER-05,Test output and reviewed snapshot,Priority,Repository,Text/log files,,,,,,,Not issued,no,
+ER-06,Signed impact assessment,Supporting,AI-IMPACT-ASSESSMENT,Signed PDF/page,,,,,,,Not issued,no,
+ER-07,Concerns contact and test record,Supporting,Adoption checklist section 5,PDF/CSV plus test message,,,,,,,Not issued,no,
+ER-08,Honesty reviews and metrics,Supporting,"compliance/reviews.jsonl; metrics summary",JSONL/CSV,,,,,,,Not issued,no,
+ER-09,Release and change log,Supporting,Release record; change log,CSV/Markdown,,,,,,,Not issued,no,
+ER-10,Model identity and supplier limitations,Supporting,System card; audit events,Markdown/CSV,,,,,,,Not issued,no,
+ER-11,Code snapshot,Supporting,Repository,ZIP or tree hash plus git status,,,,,,,Not issued,no,
+ER-12,CAPA and prior management decisions,Supporting,CAPA register; management review,CSV/Markdown,,,,,,,Not issued,no,

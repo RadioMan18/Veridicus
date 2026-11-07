@@ -59,7 +59,10 @@ pub fn get_db_connection(db_path: &str) -> Result<Connection, String> {
     }
 
     match conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())) {
-        Ok(_) => Ok(conn),
+        Ok(_) => {
+            ensure_evidence_columns(&conn)?;
+            Ok(conn)
+        }
         Err(_) => {
             // Re-initialize cleanly if previous schema was invalid or created with missing key
             drop(conn);
@@ -77,6 +80,7 @@ pub fn get_db_connection(db_path: &str) -> Result<Connection, String> {
             }
             conn2.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
                 .map_err(|e2| format!("Failed to verify recreated database: {}", e2))?;
+            ensure_evidence_columns(&conn2)?;
             Ok(conn2)
         }
     }
@@ -149,7 +153,10 @@ pub fn init_encrypted_database(db_path: &PathBuf, key: &[u8]) -> Result<(), Stri
             scope TEXT NOT NULL,
             category TEXT CHECK(category IN ('metric', 'tool', 'cert', 'tenure', 'title', 'project')),
             status TEXT CHECK(status IN ('confirmed', 'needs-confirmation', 'rejected')),
-            last_confirmed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            last_confirmed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            evidence_type TEXT NOT NULL DEFAULT 'unspecified',
+            evidence_sha256 TEXT NOT NULL DEFAULT '',
+            verified_by TEXT NOT NULL DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS rules (
@@ -201,6 +208,54 @@ pub fn init_encrypted_database(db_path: &PathBuf, key: &[u8]) -> Result<(), Stri
     ".trim()
 
     ).map_err(|e| format!("Failed to create tables: {}", e))?;
+
+    ensure_evidence_columns(&conn)?;
+    Ok(())
+}
+
+/// Existing workspaces predate claim provenance. Add the columns once, without
+/// rewriting or deleting any stored claim.
+fn ensure_evidence_columns(conn: &Connection) -> Result<(), String> {
+    let has_claims: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'claims'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Failed to inspect the database schema: {}", error))?;
+    if has_claims == 0 {
+        return Ok(());
+    }
+
+    let mut statement = conn
+        .prepare("PRAGMA table_info(claims)")
+        .map_err(|error| format!("Failed to inspect claims schema: {}", error))?;
+    let columns: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("Failed to read claims columns: {}", error))?
+        .filter_map(|column| column.ok())
+        .collect();
+    drop(statement);
+
+    for (name, ddl) in [
+        (
+            "evidence_type",
+            "ALTER TABLE claims ADD COLUMN evidence_type TEXT NOT NULL DEFAULT 'unspecified'",
+        ),
+        (
+            "evidence_sha256",
+            "ALTER TABLE claims ADD COLUMN evidence_sha256 TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "verified_by",
+            "ALTER TABLE claims ADD COLUMN verified_by TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        if !columns.iter().any(|column| column == name) {
+            conn.execute_batch(ddl)
+                .map_err(|error| format!("Failed to add claims.{}: {}", name, error))?;
+        }
+    }
 
     Ok(())
 }

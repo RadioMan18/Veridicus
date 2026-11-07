@@ -1,9 +1,35 @@
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+
 interface SettingsViewProps {
   workspacePath: string;
   gitActive: boolean;
   setupComplete: boolean;
   onOpenModels: () => void;
   onOpenSetup: () => void;
+}
+
+interface HonestyStats {
+  applications: number;
+  generated: number;
+  approved: number;
+  overrides: number;
+  blocked_findings: number;
+  advisory_findings: number;
+  by_code: Record<string, number>;
+  blocks_by_code: Record<string, number>;
+  false_block_reports: number;
+  override_rate: number;
+  last_review_at: string | null;
+  next_review_due: string | null;
+  review_cadence_days: number;
+  review_overdue: boolean;
+}
+
+function formatTime(value: string | null) {
+  if (!value) return 'Never';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
 }
 
 export default function SettingsView({
@@ -13,6 +39,51 @@ export default function SettingsView({
   onOpenModels,
   onOpenSetup,
 }: SettingsViewProps) {
+  const [stats, setStats] = useState<HonestyStats | null>(null);
+  const [statsError, setStatsError] = useState('');
+  const [reviewer, setReviewer] = useState('local-user');
+  const [reviewNote, setReviewNote] = useState('');
+  const [recording, setRecording] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState('');
+
+  useEffect(() => {
+    let active = true;
+    invoke<HonestyStats>('get_honesty_stats')
+      .then((value) => {
+        if (active) {
+          setStats(value);
+          setStatsError('');
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) setStatsError(`Could not read the honesty record: ${String(error)}`);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const recordReview = async () => {
+    setRecording(true);
+    setReviewMessage('');
+    try {
+      const updated = await invoke<HonestyStats>('record_honesty_review', {
+        reviewer,
+        note: reviewNote,
+      });
+      setStats(updated);
+      setReviewNote('');
+      setReviewMessage('Review recorded. The next due date has been reset.');
+    } catch (error: unknown) {
+      setReviewMessage(`Could not record the review: ${String(error)}`);
+    } finally {
+      setRecording(false);
+    }
+  };
+
+  const blocks = Object.entries(stats?.blocks_by_code || {});
+  const overrideRate = Math.round((stats?.override_rate || 0) * 100);
+
   return (
     <div className="max-w-3xl space-y-4">
       <div>
@@ -66,6 +137,98 @@ export default function SettingsView({
               : 'No local git history yet.'}
           </p>
         </div>
+      </section>
+
+      <section className="rounded-xl border border-aether-border bg-aether-surface p-4">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <h3 className="text-row font-semibold text-aether-text">Honesty record</h3>
+            <p className="mt-1 text-meta text-aether-text-muted">
+              Blocking findings, overrides, advisory findings and user-reported incidents. Review
+              every {stats?.review_cadence_days ?? 90} days.
+            </p>
+          </div>
+          {stats && (
+            <span
+              className={`rounded-full border px-2 py-0.5 text-meta ${
+                stats.review_overdue || !stats.last_review_at
+                  ? 'border-aether-warning text-aether-warning'
+                  : 'border-aether-success text-aether-success'
+              }`}
+            >
+              {!stats.last_review_at
+                ? 'No review recorded'
+                : stats.review_overdue
+                  ? 'Review overdue'
+                  : 'Review current'}
+            </span>
+          )}
+        </div>
+
+        {statsError && <p className="mt-3 text-meta text-aether-error">{statsError}</p>}
+
+        {stats && (
+          <>
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {[
+                ['Applications', stats.applications],
+                ['Generations', stats.generated],
+                ['Approved', stats.approved],
+                ['Overrides', stats.overrides],
+                ['Blocking findings', stats.blocked_findings],
+                ['Advisory findings', stats.advisory_findings],
+                ['False-block reports', stats.false_block_reports],
+                ['Override rate', `${overrideRate}%`],
+              ].map(([label, value]) => (
+                <div key={String(label)} className="rounded-lg bg-aether-bg p-2.5">
+                  <p className="text-meta text-aether-text-muted">{label}</p>
+                  <p className="text-row font-semibold text-aether-text">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            {blocks.length > 0 && (
+              <p className="mt-3 text-meta text-aether-text-muted">
+                Blocks by code:{' '}
+                {blocks.map(([code, count]) => `${code} ×${count}`).join(', ')}
+              </p>
+            )}
+
+            <p className="mt-3 text-meta text-aether-text-muted">
+              Last review: {formatTime(stats.last_review_at)} · Next due:{' '}
+              {formatTime(stats.next_review_due)}
+            </p>
+
+            <div className="mt-3 space-y-2 border-t border-aether-border pt-3">
+              <div className="grid gap-2 sm:grid-cols-[10rem_1fr]">
+                <input
+                  value={reviewer}
+                  onChange={(event) => setReviewer(event.target.value)}
+                  aria-label="Reviewer"
+                  placeholder="Reviewer"
+                  className="rounded border border-aether-border bg-aether-bg px-3 py-1.5 text-meta text-aether-text outline-none focus:border-aether-primary"
+                />
+                <input
+                  value={reviewNote}
+                  onChange={(event) => setReviewNote(event.target.value)}
+                  aria-label="Review note"
+                  placeholder="What did you review? Any follow-up?"
+                  className="rounded border border-aether-border bg-aether-bg px-3 py-1.5 text-meta text-aether-text outline-none focus:border-aether-primary"
+                />
+              </div>
+              <button
+                onClick={recordReview}
+                disabled={recording || !reviewer.trim()}
+                className="rounded border border-aether-border px-3 py-1.5 text-meta text-aether-text transition hover:bg-aether-primary/10 disabled:opacity-50"
+              >
+                {recording ? 'Recording…' : 'Record review'}
+              </button>
+              {reviewMessage && (
+                <p className="text-meta text-aether-text-muted">{reviewMessage}</p>
+              )}
+            </div>
+          </>
+        )}
       </section>
 
       <p className="text-xs text-aether-text-muted">

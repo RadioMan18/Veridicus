@@ -69,6 +69,13 @@ const COMMANDS: PaletteCommand[] = [
     takesArgument: false,
   },
   {
+    id: '/honesty-stats',
+    description: 'Counts of blocks, overrides and advisory findings from the audit record',
+    hint: 'no arguments',
+    example: '/honesty-stats',
+    takesArgument: false,
+  },
+  {
     id: '/logs',
     description: 'Daily log and application activity analysis',
     hint: 'no arguments',
@@ -339,9 +346,25 @@ export default function CommandPalette({
         const result: any = await invoke('open_resume_file', { filePath: argument || null });
         onHistory(
           result.success
-            ? { kind: 'success', text: `Resume imported. ${result.claims_imported} claims saved.` }
+            ? { kind: 'success', text: `Resume imported. ${result.claims_imported} claims need confirmation in Setup before they can be used.` }
             : { kind: 'error', text: result.error_message || 'Resume import failed.' },
         );
+        return;
+      }
+
+      if (known.id === '/honesty-stats') {
+        const stats: any = await invoke('get_honesty_stats');
+        const blocks = Object.entries(stats.blocks_by_code || {})
+          .map(([code, count]) => `${code}: ${count}`)
+          .join(', ');
+        const review = stats.next_review_due
+          ? `Next review due ${String(stats.next_review_due).slice(0, 10)}${stats.review_overdue ? ' (overdue)' : ''}.`
+          : 'No review recorded.';
+        const overrideRate = Math.round((stats.override_rate || 0) * 100);
+        onHistory({
+          kind: 'success',
+          text: `Honesty record across ${stats.applications} application(s): ${stats.generated} generated, ${stats.approved} approved, ${stats.overrides} override(s) (${overrideRate}%), ${stats.blocked_findings} blocking finding(s), ${stats.advisory_findings} advisory, ${stats.false_block_reports || 0} false-block report(s).${blocks ? ` Blocks by code: ${blocks}.` : ''} ${review}`,
+        });
         return;
       }
 

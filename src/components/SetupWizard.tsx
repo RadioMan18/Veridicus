@@ -28,6 +28,7 @@ interface ClaimSuggestion {
   confirmed_wording: string;
   scope: string;
   category: string;
+  evidence_type: string;
 }
 
 interface OllamaModel {
@@ -489,20 +490,66 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
                   ) : (
                     <fieldset className="space-y-2">
                       <legend className="mb-2 text-sm font-medium text-aether-text">Select only claims you can support with evidence</legend>
-                      {claims.map((claim, index) => (
-                        <label key={`${claim.statement}-${index}`} className="flex cursor-pointer gap-3 rounded-lg border border-aether-border bg-aether-bg p-3 transition hover:border-aether-primary/60">
-                          <input
-                            type="checkbox"
-                            checked={selectedClaims.includes(index)}
-                            onChange={() => toggleClaim(index)}
-                            className="mt-1 h-4 w-4 accent-aether-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-aether-primary"
-                          />
-                          <span className="min-w-0">
-                            <span className="block text-sm text-aether-text">{claim.confirmed_wording}</span>
-                            <span className="mt-1 block text-xs capitalize text-aether-text-muted">{claim.category} · from your resume</span>
-                          </span>
-                        </label>
-                      ))}
+                      <p className="mb-2 text-xs text-aether-text-muted">
+                        For each selected claim, name the evidence type and a reference (a review, project record, certificate, or portfolio). The reference is fingerprinted and recorded with your name as verifier.
+                      </p>
+                      {claims.map((claim, index) => {
+                        const selected = selectedClaims.includes(index);
+                        const update = (patch: Partial<ClaimSuggestion>) =>
+                          setClaims((current) =>
+                            current.map((item, itemIndex) =>
+                              itemIndex === index ? { ...item, ...patch } : item,
+                            ),
+                          );
+                        return (
+                          <div key={`${claim.statement}-${index}`} className="rounded-lg border border-aether-border bg-aether-bg p-3">
+                            <label className="flex cursor-pointer gap-3">
+                              <input
+                                type="checkbox"
+                                checked={selected}
+                                onChange={() => toggleClaim(index)}
+                                className="mt-1 h-4 w-4 accent-aether-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-aether-primary"
+                              />
+                              <span className="min-w-0">
+                                <span className="block text-sm text-aether-text">{claim.confirmed_wording}</span>
+                                <span className="mt-1 block text-xs capitalize text-aether-text-muted">
+                                  {claim.category} · {claim.evidence_type || 'resume'}
+                                </span>
+                              </span>
+                            </label>
+                            {selected && (
+                              <div className="mt-3 grid gap-2 border-t border-aether-border pt-3 sm:grid-cols-2">
+                                <label className="text-xs text-aether-text-muted">
+                                  Evidence type
+                                  <select
+                                    value={claim.evidence_type || 'resume'}
+                                    onChange={(event) => update({ evidence_type: event.target.value })}
+                                    className="mt-1 w-full rounded border border-aether-border bg-aether-surface px-2 py-1.5 text-xs text-aether-text outline-none focus:border-aether-primary"
+                                  >
+                                    <option value="resume">Resume</option>
+                                    <option value="performance_review">Performance review</option>
+                                    <option value="manager_review">Manager confirmation</option>
+                                    <option value="portfolio">Portfolio or work sample</option>
+                                    <option value="certificate">Certificate</option>
+                                    <option value="project_record">Project record</option>
+                                    <option value="reference">Reference</option>
+                                    <option value="other">Other</option>
+                                  </select>
+                                </label>
+                                <label className="text-xs text-aether-text-muted">
+                                  Evidence reference
+                                  <input
+                                    value={claim.evidence_source}
+                                    onChange={(event) => update({ evidence_source: event.target.value })}
+                                    placeholder="e.g. 2024 performance review"
+                                    className="mt-1 w-full rounded border border-aether-border bg-aether-surface px-2 py-1.5 text-xs text-aether-text outline-none focus:border-aether-primary"
+                                  />
+                                </label>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </fieldset>
                   )}
                   {claims.length > 0 && selectedClaims.length === 0 && (

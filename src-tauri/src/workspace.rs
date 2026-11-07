@@ -32,6 +32,9 @@ pub fn initialize_workspace(state: State<'_, AppState>) -> Result<WorkspaceStatu
         }
     }
 
+    // Skill templates are the only source of generation prompts; keep them present and current.
+    let _ = crate::skills::ensure_default_skill_templates(&workspace_root);
+
     let csv_path = workspace_root.join("applications.csv");
     if !csv_path.exists() {
         let headers = "id,date,employer,role,status,job_url,folder_path,req_id,base_resume_version,materials_version,claims_used,approved_wording,gaps_named,salary_entered,notes\n";

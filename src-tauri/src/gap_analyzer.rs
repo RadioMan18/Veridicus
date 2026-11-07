@@ -166,6 +166,9 @@ pub async fn analyze_job_gaps(
                 evidence_source: String::new(),
                 confirmed_wording: String::new(),
                 last_confirmed_at: String::new(),
+                evidence_type: "unspecified".to_string(),
+                evidence_sha256: String::new(),
+                verified_by: String::new(),
             })
         }).map_err(|e| format!("Failed to query claims: {}", e))?
             .filter_map(|r| r.ok())

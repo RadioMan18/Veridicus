@@ -79,6 +79,12 @@ pub struct OllamaGenerateResponse {
     pub done: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModelIdentity {
+    pub name: String,
+    pub digest: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OllamaConfig {
     pub fast_model: Option<String>,
@@ -119,6 +125,37 @@ pub fn get_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
             }
         }
         Err(e) => Err(format!("Failed to fetch Ollama models: {}", e)),
+    }
+}
+
+/// Resolve the model name to the digest Ollama currently serves. A mutable tag
+/// such as `:latest` is not a version; the digest is.
+pub fn model_identity(model: &str) -> ModelIdentity {
+    let digest = Client::new()
+        .get(format!("{}/api/tags", OLLAMA_BASE_URL))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .ok()
+        .filter(|response| response.status().is_success())
+        .and_then(|response| response.json::<OllamaListResponse>().ok())
+        .and_then(|list| {
+            let exact = list
+                .models
+                .iter()
+                .find(|candidate| candidate.name == model)
+                .and_then(|candidate| candidate.digest.clone());
+            exact.or_else(|| {
+                let latest = format!("{}:latest", model);
+                list.models
+                    .iter()
+                    .find(|candidate| candidate.name == latest)
+                    .and_then(|candidate| candidate.digest.clone())
+            })
+        });
+
+    ModelIdentity {
+        name: model.to_string(),
+        digest,
     }
 }
 

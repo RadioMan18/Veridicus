@@ -62,10 +62,11 @@ function FactCheck({ report }: { report: any }) {
 
   const blocking: string[] = [
     ...(report.never_claim_violations || []),
-    ...(report.scope_violations || []),
+    ...(report.unverified_metrics || []),
+    ...(report.qualifier_violations || []),
   ];
   const advisory: string[] = [
-    ...(report.unverified_metrics || []),
+    ...(report.claim_coverage_warnings || []),
     ...(report.employer_consistency_warnings || []),
     ...(report.ask_user_clarifications || []),
   ];
@@ -102,6 +103,33 @@ function FactCheck({ report }: { report: any }) {
         <p key={`advisory-${index}`} className="flex gap-2 text-meta text-aether-warning">
           <AlertTriangle size={14} className="mt-0.5 shrink-0" />
           <span>{finding}</span>
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function Guardrails({ report }: { report: any }) {
+  if (!report) return null;
+  const findings: any[] = report.findings || [];
+  if (findings.length === 0) {
+    return <p className="text-meta text-aether-success">Honesty guardrails passed.</p>;
+  }
+  return (
+    <div className="space-y-1">
+      {findings.map((finding, index) => (
+        <p
+          key={`${finding.code}-${index}`}
+          className={`flex gap-2 text-meta ${finding.blocking ? 'text-aether-error' : 'text-aether-warning'}`}
+        >
+          {finding.blocking ? (
+            <XCircle size={14} className="mt-0.5 shrink-0" />
+          ) : (
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+          )}
+          <span>
+            <span className="font-mono">{finding.code}</span> · {finding.message}
+          </span>
         </p>
       ))}
     </div>
@@ -181,6 +209,14 @@ export default function ApplicationDetail({ result, onClose }: ApplicationDetail
   const [approving, setApproving] = useState(false);
   const [approveError, setApproveError] = useState<string | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const [overrideReason, setOverrideReason] = useState('');
+  const [problemNote, setProblemNote] = useState('');
+  const [problemSent, setProblemSent] = useState(false);
+  const [incidentCategory, setIncidentCategory] = useState('other');
+  const [incidentId, setIncidentId] = useState<string | null>(null);
+  const [disclosureAcked, setDisclosureAcked] = useState(false);
+  const [exportingIncidents, setExportingIncidents] = useState(false);
   const folder = folderOf(result);
 
   const openFolder = async () => {
@@ -195,21 +231,84 @@ export default function ApplicationDetail({ result, onClose }: ApplicationDetail
     }
   };
 
-  const approve = async () => {
+  const approve = async (override?: string) => {
+    if (!disclosureAcked) {
+      setApproveError('Acknowledge the AI-assisted disclosure before approving.');
+      return;
+    }
     setApproving(true);
     setApproveError(null);
     try {
       const oid = await invoke<string>('commit_application', {
         applicationId: result.application_id,
+        overrideReason: override?.trim() ? override.trim() : null,
       });
       setCommit(oid);
+      setBlocked(null);
       pushToast({ kind: 'success', message: 'Materials approved and committed', detail: oid });
     } catch (error: any) {
       const message = error?.message || String(error);
       setApproveError(message);
+      if (message.includes('Blocked by honesty guardrails')) {
+        setBlocked(message);
+      }
       pushToast({ kind: 'error', message: 'Commit failed', detail: message });
     } finally {
       setApproving(false);
+    }
+  };
+
+  const reportProblem = async () => {
+    try {
+      const report: any = await invoke('report_output_problem', {
+        applicationId: result.application_id,
+        category: incidentCategory,
+        note: problemNote,
+      });
+      setIncidentId(report.incident_id);
+      setProblemSent(true);
+      pushToast({ kind: 'success', message: 'Incident recorded' });
+    } catch (error: any) {
+      const message = error?.message || String(error);
+      pushToast({ kind: 'error', message: 'Could not record the report', detail: message });
+    }
+  };
+
+  const acknowledgeDisclosure = async (checked: boolean) => {
+    if (!checked) {
+      setDisclosureAcked(false);
+      return;
+    }
+    try {
+      await invoke('acknowledge_output_disclosure', {
+        applicationId: result.application_id,
+      });
+      setDisclosureAcked(true);
+    } catch (error: any) {
+      setDisclosureAcked(false);
+      pushToast({
+        kind: 'error',
+        message: 'Could not record the acknowledgement',
+        detail: error?.message || String(error),
+      });
+    }
+  };
+
+  const exportIncidents = async () => {
+    setExportingIncidents(true);
+    try {
+      const path = await invoke<string | null>('export_incident_log');
+      if (path) {
+        pushToast({ kind: 'success', message: 'Incident log exported', detail: path });
+      }
+    } catch (error: any) {
+      pushToast({
+        kind: 'error',
+        message: 'Could not export the incident log',
+        detail: error?.message || String(error),
+      });
+    } finally {
+      setExportingIncidents(false);
     }
   };
 
@@ -257,8 +356,8 @@ export default function ApplicationDetail({ result, onClose }: ApplicationDetail
 
           {!commit && (
             <button
-              onClick={approve}
-              disabled={approving || !result.success}
+              onClick={() => approve()}
+              disabled={approving || !result.success || !disclosureAcked}
               className="flex items-center gap-2 rounded bg-aether-primary px-4 py-2 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
             >
               <ShieldCheck size={16} />
@@ -273,6 +372,99 @@ export default function ApplicationDetail({ result, onClose }: ApplicationDetail
         </>
       }
     >
+      <section className="mb-4 rounded-xl border border-aether-border bg-aether-surface p-4">
+        <h3 className="mb-2 flex items-center gap-2 text-row font-semibold text-aether-text">
+          <ShieldCheck size={16} className="text-aether-primary-ink" />
+          Honesty guardrails
+        </h3>
+        <Guardrails report={result.guardrail_report} />
+        <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-lg border border-aether-border bg-aether-bg p-3 text-meta text-aether-text-muted">
+          <input
+            type="checkbox"
+            checked={disclosureAcked}
+            onChange={(event) => acknowledgeDisclosure(event.target.checked)}
+            className="mt-0.5 h-4 w-4 shrink-0 accent-aether-primary"
+          />
+          <span>
+            <span className="block font-medium text-aether-text">AI-assisted draft</span>
+            Verified against your confirmed claims; you remain responsible for submission. This
+            acknowledgement is recorded in the application audit trail.
+          </span>
+        </label>
+        {(result.resume_tailored?.model || result.cover_letter?.model) && (
+          <p className="mt-1 text-meta text-aether-text-muted">
+            Model {result.resume_tailored?.model || result.cover_letter?.model} · digest{' '}
+            {(result.resume_tailored?.model_digest || result.cover_letter?.model_digest || 'unavailable').slice(0, 12)} · template v
+            {result.resume_tailored?.template_version ?? result.cover_letter?.template_version ?? '?'}
+          </p>
+        )}
+        <p className="mt-1 text-meta text-aether-text-muted">
+          Decision record: audit/events.jsonl in the application folder.
+        </p>
+        <div className="mt-3 border-t border-aether-border pt-3">
+          <p className="mb-1 text-meta font-medium text-aether-text">Something wrong with this output?</p>
+          {problemSent ? (
+            <p className="text-meta text-aether-success">
+              Incident recorded{incidentId ? ` (${incidentId.slice(0, 8)})` : ''}.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <select
+                value={incidentCategory}
+                onChange={(event) => setIncidentCategory(event.target.value)}
+                aria-label="Incident category"
+                className="rounded border border-aether-border bg-aether-bg px-2 py-1.5 text-meta text-aether-text outline-none focus:border-aether-primary"
+              >
+                <option value="false_block">False block</option>
+                <option value="missed_false_claim">Missed false claim</option>
+                <option value="scope_error">Scope error</option>
+                <option value="wrong_evidence">Wrong evidence</option>
+                <option value="other">Other</option>
+              </select>
+              <input
+                value={problemNote}
+                onChange={(event) => setProblemNote(event.target.value)}
+                placeholder="What looks wrong?"
+                className="min-w-0 flex-1 rounded border border-aether-border bg-aether-bg px-3 py-1.5 text-meta text-aether-text outline-none focus:border-aether-primary"
+              />
+              <button
+                onClick={reportProblem}
+                disabled={!problemNote.trim()}
+                className="rounded border border-aether-border px-3 py-1.5 text-meta text-aether-text transition hover:bg-aether-primary/10 disabled:opacity-50"
+              >
+                Report
+              </button>
+            </div>
+          )}
+          <button
+            onClick={exportIncidents}
+            disabled={exportingIncidents}
+            className="mt-2 rounded border border-aether-border px-3 py-1.5 text-meta text-aether-text-muted transition hover:bg-aether-primary/10 disabled:opacity-50"
+          >
+            {exportingIncidents ? 'Exporting…' : 'Export incident log'}
+          </button>
+        </div>
+        {blocked && !commit && (
+          <div className="mt-3 space-y-2 rounded-lg border border-aether-error/40 bg-aether-bg p-3">
+            <p className="whitespace-pre-wrap text-meta text-aether-error">{blocked}</p>
+            <textarea
+              value={overrideReason}
+              onChange={(event) => setOverrideReason(event.target.value)}
+              placeholder="Why are you overriding the guardrails? This is recorded with the application."
+              rows={3}
+              className="w-full rounded border border-aether-border bg-aether-surface px-3 py-2 text-meta text-aether-text outline-none focus:border-aether-primary"
+            />
+            <button
+              onClick={() => approve(overrideReason)}
+              disabled={approving || !overrideReason.trim() || !disclosureAcked}
+              className="rounded border border-aether-error px-3 py-1.5 text-meta text-aether-error transition hover:bg-aether-error/10 disabled:opacity-50"
+            >
+              Commit with override
+            </button>
+          </div>
+        )}
+      </section>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <DocumentPanel
           title="Resume"

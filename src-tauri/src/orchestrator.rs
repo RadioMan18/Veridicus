@@ -20,7 +20,7 @@ use crate::AppState;
 use crate::db::get_db_connection;
 use crate::claims::CreateClaimRequest;
 use crate::resume_parser::{extract_resume_text, ResumeFormat};
-use crate::setup_wizard::{parse_claims_from_resume, update_setup_step};
+use crate::setup_wizard::parse_claims_from_resume;
 use uuid::Uuid;
 use chrono::Utc;
 
@@ -71,8 +71,13 @@ pub fn cancel_apply() -> bool {
 }
 
 /// Commit an application only after the user approves its materials in the review gate.
+/// Blocking guardrail findings stop the commit unless the user records an override.
 #[tauri::command]
-pub fn commit_application(application_id: String, state: State<'_, AppState>) -> Result<String, String> {
+pub fn commit_application(
+    application_id: String,
+    override_reason: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let db_path_str = {
         let db_path_opt = state.db_path.lock().unwrap();
         db_path_opt
@@ -88,6 +93,166 @@ pub fn commit_application(application_id: String, state: State<'_, AppState>) ->
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .map_err(|e| format!("Application not found: {}", e))?;
+
+    let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
+    let app_dir = docs_dir
+        .join("CareerOS")
+        .join("applications")
+        .join(&application_id);
+    let resume_md = fs::read_to_string(app_dir.join("resume.md")).unwrap_or_default();
+    let letter_md = fs::read_to_string(app_dir.join("cover-letter.md")).unwrap_or_default();
+
+    if resume_md.trim().is_empty() && letter_md.trim().is_empty() {
+        return Err(
+            "No generated materials found for this application. Run /apply first.".to_string(),
+        );
+    }
+
+    if !crate::compliance::has_output_disclosure(&app_dir) {
+        return Err(
+            "Acknowledge the AI-assisted disclosure for this application before committing."
+                .to_string(),
+        );
+    }
+
+    let claims = crate::guardrails::fetch_confirmed_claims(&conn)?;
+    let rules_resume = crate::guardrails::load_active_rules(&conn, crate::guardrails::RESUME)?;
+    let rules_letter = crate::guardrails::load_active_rules(&conn, crate::guardrails::COVER_LETTER)?;
+    let gaps = crate::guardrails::required_gaps_for(&conn, &application_id)?;
+
+    let mut reports = Vec::new();
+    if !resume_md.trim().is_empty() {
+        reports.push(crate::guardrails::evaluate_document(
+            crate::guardrails::RESUME,
+            &resume_md,
+            &claims,
+            &rules_resume,
+            Some(employer.as_str()),
+            Some(role.as_str()),
+            &[],
+        ));
+    }
+    if !letter_md.trim().is_empty() {
+        reports.push(crate::guardrails::evaluate_document(
+            crate::guardrails::COVER_LETTER,
+            &letter_md,
+            &claims,
+            &rules_letter,
+            Some(employer.as_str()),
+            Some(role.as_str()),
+            &gaps,
+        ));
+    }
+    let mut report = crate::guardrails::merge(reports);
+    let mut cited = Vec::new();
+    if !resume_md.trim().is_empty() {
+        cited.extend(crate::guardrails::cited_claim_ids(&resume_md, &claims));
+    }
+    if !letter_md.trim().is_empty() {
+        cited.extend(crate::guardrails::cited_claim_ids(&letter_md, &claims));
+    }
+    cited.sort();
+    cited.dedup();
+    report
+        .findings
+        .extend(crate::guardrails::weak_provenance_findings(&claims, &cited));
+    report.blocking = report.findings.iter().any(|finding| finding.blocking);
+    report.passed = !report.blocking;
+
+    fs::write(
+        app_dir.join("guardrail-report-commit.json"),
+        serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("Failed to serialize guardrail report: {}", error))?,
+    )
+    .map_err(|error| format!("Failed to write guardrail report: {}", error))?;
+
+    let mut override_used = false;
+    if report.blocking {
+        let summary = report
+            .findings
+            .iter()
+            .filter(|finding| finding.blocking)
+            .map(|finding| format!("{}: {}", finding.code, finding.message))
+            .collect::<Vec<_>>()
+            .join("\n- ");
+
+        match override_reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+        {
+            None => {
+                return Err(format!(
+                    "Blocked by honesty guardrails:\n- {}\n\nFix the documents, or commit with a written override.",
+                    summary
+                ));
+            }
+            Some(reason) => {
+                override_used = true;
+                let record = format!(
+                    "# Guardrail override\n\nDate: {}\nReason: {}\n\n## Findings\n- {}\n",
+                    Utc::now().to_rfc3339(),
+                    reason,
+                    summary
+                );
+                fs::write(app_dir.join("guardrail-override.md"), record)
+                    .map_err(|error| format!("Failed to write override record: {}", error))?;
+
+                let note = format!(
+                    "\nGuardrail override ({}): {} — {}",
+                    Utc::now().format("%Y-%m-%d"),
+                    reason,
+                    summary.replace('\n', " ")
+                );
+                conn.execute(
+                    "UPDATE application_records SET notes = notes || ?1 WHERE id = ?2",
+                    [note.as_str(), application_id.as_str()],
+                )
+                .map_err(|error| format!("Failed to record override: {}", error))?;
+            }
+        }
+    }
+
+    let last_generation = crate::compliance::last_generation(&app_dir);
+    let model = last_generation
+        .as_ref()
+        .and_then(|event| event.model.clone());
+    let model_digest = last_generation
+        .as_ref()
+        .and_then(|event| event.model_digest.clone());
+    let model_digest_at_commit = model
+        .as_deref()
+        .and_then(|name| crate::ollama::model_identity(name).digest);
+    let mut all_rules = rules_resume.clone();
+    all_rules.extend(rules_letter.iter().cloned());
+    let (rule_ids, rules_sha256) = crate::compliance::rules_fingerprint(&all_rules);
+
+    let mut audit = crate::compliance::new_event(
+        &application_id,
+        if override_used { "override" } else { "approved" },
+    );
+    audit.model = model;
+    audit.model_digest = model_digest;
+    audit.model_digest_at_commit = model_digest_at_commit;
+    audit.template_version = crate::skills::TEMPLATE_VERSION;
+    audit.rule_ids = rule_ids;
+    audit.rules_sha256 = rules_sha256;
+    audit.documents = crate::compliance::document_digests(&app_dir);
+    audit.blocking = report.blocking;
+    audit.findings = report.findings.clone();
+    audit.advisory_count = report
+        .findings
+        .iter()
+        .filter(|finding| !finding.blocking)
+        .count();
+    audit.override_reason = if override_used {
+        override_reason.clone()
+    } else {
+        None
+    };
+    crate::compliance::append_event(&app_dir, &audit)
+        .map_err(|error| format!("Could not write the audit record; commit blocked: {}", error))?;
+
     crate::git_engine::commit_changes(
         state.clone(),
         format!("Apply: {} - {} ({})", employer, role, date),
@@ -182,6 +347,7 @@ pub struct ApplyResult {
     pub cover_letter: Option<crate::skills::SkillExecutionResult>,
     pub fact_check_report: Option<crate::fact_check::FactCheckReport>,
     pub resume_fact_check_report: Option<crate::fact_check::FactCheckReport>,
+    pub guardrail_report: Option<crate::guardrails::GuardrailReport>,
     pub resume_pdf_compiled: Option<crate::typst_engine::CompileResult>,
     pub resume_visual_flags: Option<crate::typst_engine::VisualFlags>,
     pub resume_pages_rasterized: Option<crate::typst_engine::RasterizeResult>,
@@ -211,6 +377,7 @@ pub async fn execute_apply_workflow(
         cover_letter: None,
         fact_check_report: None,
         resume_fact_check_report: None,
+        guardrail_report: None,
         resume_pdf_compiled: None,
         resume_visual_flags: None,
         resume_pages_rasterized: None,
@@ -328,6 +495,23 @@ pub async fn execute_apply_workflow(
         }
     }
 
+    let mut required_gaps: Vec<crate::guardrails::RequiredGap> = Vec::new();
+    if let Some(gaps) = result.gap_analysis.as_ref() {
+        match crate::guardrails::persist_gaps(&conn, &app_id, gaps) {
+            Ok(persisted) => {
+                required_gaps = persisted
+                    .into_iter()
+                    .filter(|gap| gap.requirement_tier == "must_have" || gap.requirement_tier == "gate")
+                    .collect();
+            }
+            Err(error) => {
+                emit_stage(&app, "gap", "Gap analysis against claims ledger", "failed", Some(error.clone()));
+                result.error_message = Some(format!("Gap persistence failed: {}", error));
+                return Ok(result);
+            }
+        }
+    }
+
     // 3. Execute guardrailed skills (resume-tailor and cover-letter)
     // Pass the extracted requirements alongside the description so tailoring can target them.
     let scraped = scrape_result.as_ref().unwrap();
@@ -351,6 +535,7 @@ pub async fn execute_apply_workflow(
             application_id: None,
             jd_text: Some(jd_text.clone()),
             use_deep_model: true,
+            required_gaps: Vec::new(),
         },
         state.clone(),
     ).await;
@@ -376,6 +561,7 @@ pub async fn execute_apply_workflow(
             application_id: None,
             jd_text: Some(jd_text.clone()),
             use_deep_model: true,
+            required_gaps: required_gaps.clone(),
         },
         state.clone(),
     ).await;
@@ -400,11 +586,25 @@ pub async fn execute_apply_workflow(
         .map(|g| g.supported_claim_ids.clone())
         .unwrap_or_default();
 
+    let never_claim_subjects = |kind: &str| -> Vec<String> {
+        crate::guardrails::load_active_rules(&conn, kind)
+            .map(|rules| {
+                rules
+                    .into_iter()
+                    .filter(|rule| rule.kind == "never_claim")
+                    .map(|rule| rule.subject)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let resume_never_claims = never_claim_subjects(crate::guardrails::RESUME);
+    let letter_never_claims = never_claim_subjects(crate::guardrails::COVER_LETTER);
+
     if let Some(resume_md) = result.resume_tailored.as_ref().map(|r| r.markdown_output.clone()) {
         match crate::fact_check::run_fact_check_pass(
             resume_md,
             confirmed_claim_ids.clone(),
-            vec![], // never_claim_subjects - populated from rules in fact_check internally
+            resume_never_claims.clone(),
             Some(employer.clone()),
             Some(role.clone()),
             state.clone(),
@@ -422,7 +622,7 @@ pub async fn execute_apply_workflow(
         match crate::fact_check::run_fact_check_pass(
             cover_md,
             confirmed_claim_ids,
-            vec![], // never_claim_subjects - populated from rules in fact_check internally
+            letter_never_claims,
             Some(employer.clone()),
             Some(role.clone()),
             state.clone(),
@@ -436,7 +636,186 @@ pub async fn execute_apply_workflow(
         }
     }
 
+    emit_stage(
+        &app,
+        "fact-check",
+        "Fact-check both documents",
+        "active",
+        Some("Advisory scope review".to_string()),
+    );
+
+    // 4b. Honesty guardrails: model proposes, the record decides.
+    if let Some(letter) = result.cover_letter.as_ref() {
+        for gap in required_gaps.iter() {
+            if crate::guardrails::gap_named(&letter.markdown_output, &gap.requirement) {
+                let _ = conn.execute(
+                    "UPDATE gaps SET status = 'named_in_letter' WHERE id = ?1",
+                    [gap.id.as_str()],
+                );
+            }
+        }
+    }
+
+    let mut cited_claim_ids: Vec<String> = Vec::new();
+    match crate::guardrails::fetch_confirmed_claims(&conn) {
+        Ok(claims) => {
+            let rules_resume = crate::guardrails::load_active_rules(&conn, crate::guardrails::RESUME).unwrap_or_default();
+            let rules_letter = crate::guardrails::load_active_rules(&conn, crate::guardrails::COVER_LETTER).unwrap_or_default();
+            let mut reports = Vec::new();
+            if let Some(resume) = result.resume_tailored.as_ref() {
+                reports.push(crate::guardrails::evaluate_document(
+                    crate::guardrails::RESUME,
+                    &resume.markdown_output,
+                    &claims,
+                    &rules_resume,
+                    Some(employer.as_str()),
+                    Some(role.as_str()),
+                    &[],
+                ));
+            }
+            if let Some(letter) = result.cover_letter.as_ref() {
+                reports.push(crate::guardrails::evaluate_document(
+                    crate::guardrails::COVER_LETTER,
+                    &letter.markdown_output,
+                    &claims,
+                    &rules_letter,
+                    Some(employer.as_str()),
+                    Some(role.as_str()),
+                    &required_gaps,
+                ));
+            }
+            // Advisory model pass: looks for scope inflation the lexicon misses.
+            // It never blocks, and every observation must cite a real claim and
+            // quote a sentence that actually appears in the document.
+            let scope_model = crate::ollama::get_ollama_config(state.clone())
+                .ok()
+                .and_then(|config| config.fast_model.or(config.deep_model))
+                .unwrap_or_else(|| "llama3.2:latest".to_string());
+            let mut advisory = crate::guardrails::GuardrailReport::default();
+            let mut review_error: Option<String> = None;
+            for (kind, draft) in [
+                (
+                    crate::guardrails::RESUME,
+                    result.resume_tailored.as_ref().map(|resume| resume.markdown_output.as_str()),
+                ),
+                (
+                    crate::guardrails::COVER_LETTER,
+                    result.cover_letter.as_ref().map(|letter| letter.markdown_output.as_str()),
+                ),
+            ] {
+                let Some(draft) = draft else { continue };
+                let _ = kind;
+                let outcome = crate::scope_review::review(draft, &claims, &scope_model);
+                if let Some(error) = outcome.error {
+                    review_error.get_or_insert(error);
+                    continue;
+                }
+                if outcome.ran {
+                    advisory.checks_run += 1;
+                }
+                advisory.findings.extend(crate::scope_review::advisory_findings(&outcome.findings));
+            }
+            if let Some(error) = review_error {
+                advisory.findings.push(crate::guardrails::GuardrailFinding {
+                    code: "scope_review_unavailable".to_string(),
+                    message: format!("the advisory model scope review did not run: {}", error),
+                    blocking: false,
+                });
+            }
+            reports.push(advisory);
+
+            let mut cited = Vec::new();
+            if let Some(resume) = result.resume_tailored.as_ref() {
+                cited.extend(crate::guardrails::cited_claim_ids(&resume.markdown_output, &claims));
+            }
+            if let Some(letter) = result.cover_letter.as_ref() {
+                cited.extend(crate::guardrails::cited_claim_ids(&letter.markdown_output, &claims));
+            }
+            cited.sort();
+            cited.dedup();
+            cited_claim_ids = cited;
+
+            let mut report = crate::guardrails::merge(reports);
+            report
+                .findings
+                .extend(crate::guardrails::weak_provenance_findings(&claims, &cited_claim_ids));
+            let injection_warning = result
+                .resume_tailored
+                .as_ref()
+                .and_then(|skill| skill.untrusted_input_warning.clone())
+                .or_else(|| {
+                    result
+                        .cover_letter
+                        .as_ref()
+                        .and_then(|skill| skill.untrusted_input_warning.clone())
+                });
+            if let Some(warning) = injection_warning.as_ref() {
+                report.findings.push(crate::guardrails::GuardrailFinding {
+                    code: "untrusted_input_instruction".to_string(),
+                    message: warning.clone(),
+                    blocking: false,
+                });
+            }
+            report.blocking = report.findings.iter().any(|finding| finding.blocking);
+            report.passed = !report.blocking;
+            let _ = fs::write(
+                app_dir.join("guardrail-report.json"),
+                serde_json::to_string_pretty(&report).unwrap_or_default(),
+            );
+
+            let mut all_rules = rules_resume.clone();
+            all_rules.extend(rules_letter.iter().cloned());
+            let (rule_ids, rules_sha256) = crate::compliance::rules_fingerprint(&all_rules);
+            let generator = result
+                .resume_tailored
+                .as_ref()
+                .or(result.cover_letter.as_ref());
+            let mut audit = crate::compliance::new_event(&app_id, "generated");
+            audit.model = generator.and_then(|skill| skill.model.clone());
+            audit.model_digest = generator.and_then(|skill| skill.model_digest.clone());
+            audit.template_version = crate::skills::TEMPLATE_VERSION;
+            audit.rule_ids = rule_ids;
+            audit.rules_sha256 = rules_sha256;
+            if let Some(resume) = result.resume_tailored.as_ref() {
+                audit.documents.push(crate::compliance::digest_text(
+                    "resume.md",
+                    &resume.markdown_output,
+                ));
+            }
+            if let Some(letter) = result.cover_letter.as_ref() {
+                audit.documents.push(crate::compliance::digest_text(
+                    "cover-letter.md",
+                    &letter.markdown_output,
+                ));
+            }
+            audit.blocking = report.blocking;
+            audit.findings = report.findings.clone();
+            audit.advisory_count = report
+                .findings
+                .iter()
+                .filter(|finding| !finding.blocking)
+                .count();
+            if injection_warning.is_some() {
+                audit.note = Some(
+                    "Untrusted input warning: the posting contained instruction-like text."
+                        .to_string(),
+                );
+            }
+            if let Err(error) = crate::compliance::append_event(&app_dir, &audit) {
+                append_warning(
+                    &mut result.error_message,
+                    format!("Audit record not written: {}", error),
+                );
+            }
+            result.guardrail_report = Some(report);
+        }
+        Err(error) => {
+            result.error_message = Some(format!("Guardrail evaluation failed: {}", error));
+        }
+    }
+
     emit_stage(&app, "fact-check", "Fact-check both documents", "done", None);
+
     if cancelled(&mut result, &app, "render", "Compile PDFs and run visual QA") {
         return Ok(result);
     }
@@ -497,19 +876,20 @@ pub async fn execute_apply_workflow(
     emit_stage(&app, "save", "Save, sync ledger and commit", "active", None);
 
     // 8. Update application_records with results
-    let claims_used = result.gap_analysis.as_ref()
-        .map(|g| g.supported_claim_ids.join(","))
-        .unwrap_or_default();
-    let gaps_named = result.gap_analysis.as_ref()
-        .map(|g| g.identified_gaps.len().to_string())
-        .unwrap_or_else(|| "0".to_string());
+    let claims_used = cited_claim_ids.join(",");
+    let gaps_named: String = conn.query_row(
+        "SELECT COUNT(*) FROM gaps WHERE application_id = ?1 AND status = 'named_in_letter'",
+        [app_id.as_str()],
+        |row| row.get::<_, i64>(0),
+    ).unwrap_or(0).to_string();
     // This column records confirmed wording approved for reuse, not a generated document.
     // Writing the letter here made later employer-consistency checks compare against prose.
     let approved_wording = String::new();
+    let materials_version = crate::compliance::materials_version(&app_dir);
 
     conn.execute(
         "UPDATE application_records SET claims_used = ?1, gaps_named = ?2, approved_wording = ?3, materials_version = ?4 WHERE id = ?5",
-        [claims_used.as_str(), gaps_named.as_str(), approved_wording.as_str(), "master_v1", app_id.as_str()],
+        [claims_used.as_str(), gaps_named.as_str(), approved_wording.as_str(), materials_version.as_str(), app_id.as_str()],
     ).map_err(|e| format!("Failed to update application record: {}", e))?;
 
     // 9. Sync CSV mirror using the same 15-column header the workspace seeds.
@@ -527,7 +907,7 @@ pub async fn execute_apply_workflow(
         csv_field(&folder_path),
         csv_field(input.req_id.as_deref().unwrap_or("")),
         csv_field("master_v1"),
-        csv_field("master_v1"),
+        csv_field(&materials_version),
         csv_field(&claims_used),
         csv_field(&approved_wording),
         csv_field(&gaps_named),
@@ -555,35 +935,16 @@ pub async fn execute_apply_workflow(
         ));
     }
 
-    if input.defer_commit {
-        emit_stage(
-            &app,
-            "save",
-            "Save, sync ledger and commit",
-            "awaiting",
-            Some("Review the materials, then approve to commit".to_string()),
-        );
-        result.success = true;
-        return Ok(result);
-    }
-
-    // 11. Trigger Git commit
-    let commit_result = crate::git_engine::commit_changes(
-        state.clone(),
-        format!("Apply: {} - {} ({})", employer, role, now),
+    // Approval is always a deliberate human action. The generation pipeline never
+    // commits, even if an older caller sets defer_commit = false. The review gate
+    // also requires the per-application disclosure acknowledgement.
+    emit_stage(
+        &app,
+        "save",
+        "Save, sync ledger and commit",
+        "awaiting",
+        Some("Review the materials, acknowledge the disclosure, then approve to commit".to_string()),
     );
-    match commit_result {
-        Ok(oid) => {
-            emit_stage(&app, "save", "Save, sync ledger and commit", "done", Some(format!("Committed {}", oid)));
-            result.git_commit = Some(oid);
-        }
-        Err(e) => {
-            emit_stage(&app, "save", "Save, sync ledger and commit", "failed", Some(e.clone()));
-            result.error_message = Some(format!("Git commit failed: {}", e));
-            return Ok(result);
-        }
-    }
-
     result.success = true;
     Ok(result)
 }
@@ -920,7 +1281,214 @@ pub async fn analyze_logs(state: State<'_, AppState>) -> Result<String, String> 
     ))
 }
 
-/// Get all application records for the ledger dashboard.
+/// Aggregate honesty evidence plus the review cadence.
+#[tauri::command]
+pub fn get_honesty_stats(
+    _state: State<'_, AppState>,
+) -> Result<crate::compliance::HonestyStats, String> {
+    let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
+    let workspace_root = docs_dir.join("CareerOS");
+    Ok(crate::compliance::stats(&workspace_root))
+}
+
+const PROBLEM_CATEGORIES: &[&str] = &[
+    "false_block",
+    "missed_false_claim",
+    "scope_error",
+    "wrong_evidence",
+    "other",
+];
+
+/// Record a structured incident. This is the recourse path the standards expect;
+/// it writes a separate append-only file, not a database edit.
+#[tauri::command]
+pub fn report_output_problem(
+    application_id: String,
+    category: String,
+    note: String,
+    _state: State<'_, AppState>,
+) -> Result<crate::compliance::ProblemReport, String> {
+    let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
+    let app_dir = docs_dir
+        .join("CareerOS")
+        .join("applications")
+        .join(&application_id);
+    let category = if PROBLEM_CATEGORIES.contains(&category.as_str()) {
+        category
+    } else {
+        "other".to_string()
+    };
+    let report = crate::compliance::ProblemReport {
+        incident_id: Uuid::new_v4().to_string(),
+        timestamp: Utc::now().to_rfc3339(),
+        application_id,
+        category,
+        note,
+        status: "open".to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+    crate::compliance::append_problem(&app_dir, &report)?;
+    Ok(report)
+}
+
+/// Export every structured incident row as CSV. Returns the chosen path.
+#[tauri::command]
+pub fn export_incident_log() -> Result<Option<String>, String> {
+    let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
+    let workspace_root = docs_dir.join("CareerOS");
+    let reports = crate::compliance::all_problem_reports(&workspace_root);
+    let mut csv = String::from(
+        "incident_id,timestamp,application_id,category,status,note,app_version\n",
+    );
+    for report in reports {
+        csv.push_str(&format!(
+            "{},{},{},{},{},{},{}\n",
+            csv_field(&report.incident_id),
+            csv_field(&report.timestamp),
+            csv_field(&report.application_id),
+            csv_field(&report.category),
+            csv_field(&report.status),
+            csv_field(&report.note),
+            csv_field(&report.app_version),
+        ));
+    }
+
+    let selected = FileDialog::new()
+        .set_file_name("careeros-incident-log.csv")
+        .add_filter("CSV", &["csv"])
+        .save_file();
+    match selected {
+        Some(path) => {
+            fs::write(&path, csv).map_err(|error| format!("Failed to write incident log: {}", error))?;
+            Ok(Some(path.to_string_lossy().into_owned()))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Record a review of the honesty metrics. The next due date is derived from this row.
+#[tauri::command]
+pub fn record_honesty_review(
+    reviewer: String,
+    note: String,
+    state: State<'_, AppState>,
+) -> Result<crate::compliance::HonestyStats, String> {
+    let db_path_str = {
+        let db_path_opt = state.db_path.lock().unwrap();
+        db_path_opt
+            .as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    let workspace_root = PathBuf::from(&db_path_str)
+        .parent()
+        .ok_or("Invalid database path")?
+        .to_path_buf();
+    let stats = crate::compliance::stats(&workspace_root);
+    let reviewer = if reviewer.trim().is_empty() {
+        "local-user".to_string()
+    } else {
+        reviewer.trim().to_string()
+    };
+    let record = crate::compliance::ReviewRecord {
+        review_id: Uuid::new_v4().to_string(),
+        timestamp: Utc::now().to_rfc3339(),
+        reviewer,
+        note: note.trim().to_string(),
+        applications_covered: stats.applications,
+        blocking_findings: stats.blocked_findings,
+        overrides: stats.overrides,
+        false_block_reports: stats.false_block_reports,
+    };
+    crate::compliance::append_review(&workspace_root, &record)?;
+    Ok(crate::compliance::stats(&workspace_root))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiDisclosureState {
+    pub acknowledged: bool,
+    pub version: String,
+    pub text: String,
+}
+
+#[tauri::command]
+pub fn get_ai_disclosure_state(
+    state: State<'_, AppState>,
+) -> Result<AiDisclosureState, String> {
+    let db_path_str = {
+        let db_path_opt = state.db_path.lock().unwrap();
+        db_path_opt
+            .as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    let conn = get_db_connection(&db_path_str)?;
+    let acknowledged: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'ai_disclosure_ack_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| format!("Failed to read disclosure state: {}", error))?;
+    Ok(AiDisclosureState {
+        acknowledged: acknowledged.as_deref() == Some(crate::compliance::DISCLOSURE_VERSION),
+        version: crate::compliance::DISCLOSURE_VERSION.to_string(),
+        text: crate::compliance::DISCLOSURE_TEXT.to_string(),
+    })
+}
+
+#[tauri::command]
+pub fn acknowledge_ai_disclosure(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let db_path_str = {
+        let db_path_opt = state.db_path.lock().unwrap();
+        db_path_opt
+            .as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    let conn = get_db_connection(&db_path_str)?;
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ai_disclosure_ack_version', ?1)",
+        [crate::compliance::DISCLOSURE_VERSION],
+    )
+    .map_err(|error| format!("Failed to save disclosure acknowledgement: {}", error))?;
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ai_disclosure_ack_at', ?1)",
+        [now.as_str()],
+    )
+    .map_err(|error| format!("Failed to save disclosure timestamp: {}", error))?;
+
+    let workspace_root = PathBuf::from(&db_path_str)
+        .parent()
+        .ok_or("Invalid database path")?
+        .to_path_buf();
+    crate::compliance::append_disclosure(&workspace_root, None, "first-run")?;
+    Ok(true)
+}
+
+/// Per-application acknowledgement. It is written after the generation it covers,
+/// so regenerating requires a fresh acknowledgement.
+#[tauri::command]
+pub fn acknowledge_output_disclosure(
+    application_id: String,
+    _state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
+    let workspace_root = docs_dir.join("CareerOS");
+    let app_dir = workspace_root.join("applications").join(&application_id);
+
+    let mut event = crate::compliance::new_event(&application_id, "disclosure_acknowledged");
+    event.note = Some(crate::compliance::DISCLOSURE_VERSION.to_string());
+    event.documents = crate::compliance::document_digests(&app_dir);
+    crate::compliance::append_event(&app_dir, &event)?;
+    crate::compliance::append_disclosure(&workspace_root, Some(&application_id), "per-application")?;
+    Ok(true)
+}
+
 #[tauri::command]
 pub fn get_application_records(state: State<'_, AppState>) -> Result<Vec<ApplicationRecord>, String> {
     let db_path_str = {
@@ -1060,12 +1628,11 @@ pub async fn open_resume_file(
         let now = Utc::now().to_rfc3339();
 
         let inserted = conn.execute(
-            "INSERT INTO claims (id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7
+            "INSERT INTO claims (id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at, evidence_type, evidence_sha256, verified_by)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'needs-confirmation', ?7, ?8, ?9, ''
              WHERE NOT EXISTS (
                  SELECT 1 FROM claims
-                 WHERE status = 'confirmed'
-                   AND statement = ?2
+                 WHERE statement = ?2
                    AND evidence_source = ?3
                    AND confirmed_wording = ?4
                    AND scope = ?5
@@ -1079,6 +1646,15 @@ pub async fn open_resume_file(
                 suggestion.scope.as_str(),
                 suggestion.category.as_str(),
                 now.as_str(),
+                "resume",
+                crate::claims::claim_evidence_sha256(
+                    &suggestion.statement,
+                    &suggestion.evidence_source,
+                    "resume",
+                    &suggestion.scope,
+                    &suggestion.category,
+                )
+                .as_str(),
             ],
         ).map_err(|e| format!("Failed to save claim: {}", e))?;
         if inserted > 0 {
@@ -1087,7 +1663,7 @@ pub async fn open_resume_file(
     }
 
     crate::setup_wizard::update_setup_step(&conn, "resume")?;
-    crate::setup_wizard::update_setup_step(&conn, "claims")?;
+    // Imported claims stay staged until the user confirms them in the setup wizard.
 
     Ok(ResumeImportResult {
         success: true,

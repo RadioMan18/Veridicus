@@ -31,3 +31,20 @@ src-tauri/icons/*.ico
 # Temporary
 tmp/
 temp/
+
+# Local CareerOS workspace and generated skill templates
+.careeros/
+
+# Local editor/agent configuration
+.kilo/
+
+# Personal test files and local scratch output
+career_resume_*
+test_resume.md
+test_screenshot.png
+testing/
+check.py
+output.txt
+prep_result.md
+proposed_prompts.md
+job-req-samples*.md

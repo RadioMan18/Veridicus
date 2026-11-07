@@ -18,8 +18,9 @@ pub struct FactCheckReport {
     pub passed: bool,
     pub blocking: bool,
     pub unverified_metrics: Vec<String>,
+    pub qualifier_violations: Vec<String>,
     pub never_claim_violations: Vec<String>,
-    pub scope_violations: Vec<String>,
+    pub claim_coverage_warnings: Vec<String>,
     pub employer_consistency_warnings: Vec<String>,
     pub ask_user_clarifications: Vec<String>,
     pub diff_summary: String,
@@ -54,7 +55,7 @@ pub fn run_fact_check_pass(
     let conn = get_db_connection(db_path_str)?;
 
     // 1. Fetch confirmed claims from ledger
-    let mut stmt = conn.prepare("SELECT id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at FROM claims WHERE status = 'confirmed'")
+    let mut stmt = conn.prepare("SELECT id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at, evidence_type, evidence_sha256, verified_by FROM claims WHERE status = 'confirmed'")
         .map_err(|e| format!("Failed to prepare claims query: {}", e))?;
     let claims: Vec<Claim> = stmt.query_map([], |row| {
         Ok(Claim {
@@ -66,6 +67,9 @@ pub fn run_fact_check_pass(
             category: row.get(5)?,
             status: row.get(6)?,
             last_confirmed_at: row.get(7)?,
+            evidence_type: row.get(8)?,
+            evidence_sha256: row.get(9)?,
+            verified_by: row.get(10)?,
         })
     }).map_err(|e| format!("Failed to query claims: {}", e))?
     .filter_map(|r| r.ok())
@@ -73,27 +77,12 @@ pub fn run_fact_check_pass(
 
     let confirmed_claim_set: HashSet<String> = confirmed_claim_ids.into_iter().collect();
 
-    // 2. Extract all metrics from draft
-    let metrics = extract_metrics(&draft_md);
-
-    // 3. Verify each metric against confirmed claims
-    let mut unverified_metrics: Vec<String> = Vec::new();
-    let mut metrics_verified = 0;
-
-    for metric in &metrics {
-        let normalized = &metric.normalized;
-        let is_verified = claims.iter().any(|c| {
-            c.confirmed_wording.contains(normalized) || c.statement.contains(normalized)
-        }) || confirmed_claim_set.iter().any(|id| {
-            claims.iter().any(|c| c.id == *id && (c.confirmed_wording.contains(normalized) || c.statement.contains(normalized)))
-        });
-
-        if is_verified {
-            metrics_verified += 1;
-        } else {
-            unverified_metrics.push(metric.raw.clone());
-        }
-    }
+    // 2. Verify all numeric metrics appear in confirmed claims, qualifiers included
+    let verification = verify_metrics(&draft_md, &claims);
+    let unverified_metrics = verification.unverified;
+    let qualifier_violations = verification.qualifier_violations;
+    let metrics_found = verification.found;
+    let metrics_verified = verification.verified;
 
     // 4. Never-claim scan
     let mut never_claim_violations: Vec<String> = Vec::new();
@@ -105,13 +94,13 @@ pub fn run_fact_check_pass(
     }
 
     // 5. Scope verification: check that claims used match their scope
-    let mut scope_violations: Vec<String> = Vec::new();
+    let mut claim_coverage_warnings: Vec<String> = Vec::new();
     for claim_id in &confirmed_claim_set {
         if let Some(claim) = claims.iter().find(|c| &c.id == claim_id) {
             // Check if the claim's scope matches how it's used in the draft
             // For now, flag claims whose statement doesn't appear in draft at all
             if !draft_lower.contains(&claim.confirmed_wording.to_lowercase()) {
-                scope_violations.push(format!(
+                claim_coverage_warnings.push(format!(
                     "Claim '{}' (scope: {}) not referenced in draft",
                     claim.confirmed_wording, claim.scope
                 ));
@@ -136,20 +125,18 @@ pub fn run_fact_check_pass(
         }
     }
 
-    // 7. Employer-consistency query against prior application_records
-    let employer_consistency_from_history = check_employer_consistency(&conn, &draft_md, &claims)?;
-    employer_consistency_warnings.extend(employer_consistency_from_history);
-
     // 8. AST structural diff via comrak
     let diff_summary = compute_ast_diff(&draft_md)?;
 
     // 9. Determine pass/fail and blocking/advisory
-    let blocking = !never_claim_violations.is_empty() || !unverified_metrics.is_empty();
-    let passed = !blocking && scope_violations.is_empty() && employer_consistency_warnings.is_empty();
+    let blocking = !never_claim_violations.is_empty()
+        || !unverified_metrics.is_empty()
+        || !qualifier_violations.is_empty();
+    let passed = !blocking && claim_coverage_warnings.is_empty() && employer_consistency_warnings.is_empty();
 
     let mut ask_user_clarifications: Vec<String> = Vec::new();
-    if !scope_violations.is_empty() {
-        ask_user_clarifications.push("Some confirmed claims are not referenced in the draft. Review scope coverage.".to_string());
+    if !claim_coverage_warnings.is_empty() {
+        ask_user_clarifications.push("Some confirmed claims are not referenced in the draft. Review claim coverage.".to_string());
     }
     if !employer_consistency_warnings.is_empty() {
         ask_user_clarifications.push("Employer consistency warnings detected. Verify metadata alignment.".to_string());
@@ -159,12 +146,13 @@ pub fn run_fact_check_pass(
         passed,
         blocking,
         unverified_metrics,
+        qualifier_violations,
         never_claim_violations,
-        scope_violations,
+        claim_coverage_warnings,
         employer_consistency_warnings,
         ask_user_clarifications,
         diff_summary,
-        metrics_found: metrics.len(),
+        metrics_found,
         metrics_verified,
     })
 }
@@ -227,53 +215,6 @@ fn extract_qualifier(text: &str) -> Option<String> {
     None
 }
 
-/// Check employer consistency against prior application_records.
-fn check_employer_consistency(
-    conn: &rusqlite::Connection,
-    draft_md: &str,
-    claims: &[Claim],
-) -> Result<Vec<String>, String> {
-    let mut warnings = Vec::new();
-
-    // Find prior applications with the same employer mentioned in draft
-    // Look for employer names in draft
-    let draft_lower = draft_md.to_lowercase();
-
-    let mut stmt2 = conn.prepare("SELECT employer, claims_used, approved_wording FROM application_records WHERE status != 'PENDING_REVIEW'")
-        .map_err(|e| format!("Failed to prepare prior apps query: {}", e))?;
-    let prior_apps: Vec<(String, String, String)> = stmt2.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-        ))
-    }).map_err(|e| format!("Failed to query prior applications: {}", e))?
-    .filter_map(|r| r.ok())
-    .collect();
-
-    for (employer, claims_used, approved_wording) in &prior_apps {
-        if draft_lower.contains(&employer.to_lowercase()) {
-            // Check if metrics in draft contradict prior approved wording
-            let prior_claims: Vec<&str> = claims_used.split(',').map(|s| s.trim()).collect();
-            for claim_id in &prior_claims {
-                if let Some(claim) = claims.iter().find(|c| &c.id == claim_id) {
-                    if draft_lower.contains(&claim.confirmed_wording.to_lowercase()) {
-                        // Metric present - check if wording matches approved
-                        if !approved_wording.is_empty() && !draft_lower.contains(&approved_wording.to_lowercase()) {
-                            warnings.push(format!(
-                                "Employer consistency: metric '{}' used with different wording than prior application to {}",
-                                claim.confirmed_wording, employer
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(warnings)
-}
-
 /// Compute AST structural diff using comrak against draft content.
 fn compute_ast_diff(draft_md: &str) -> Result<String, String> {
     let mut headings: usize = 0;
@@ -321,9 +262,9 @@ pub fn get_fact_check_summary(report: FactCheckReport) -> String {
         }
     }
 
-    if !report.scope_violations.is_empty() {
-        summary.push_str(&format!("\n📐 Scope Violations ({}):\n", report.scope_violations.len()));
-        for v in &report.scope_violations {
+    if !report.claim_coverage_warnings.is_empty() {
+        summary.push_str(&format!("\n📐 Claim Coverage Warnings ({}):\n", report.claim_coverage_warnings.len()));
+        for v in &report.claim_coverage_warnings {
             summary.push_str(&format!("- {}\n", v));
         }
     }
@@ -342,4 +283,116 @@ pub fn get_fact_check_summary(report: FactCheckReport) -> String {
     ));
 
     summary
+}
+
+
+/// Metric verification that keeps the qualifier attached to the number.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct MetricVerification {
+    pub unverified: Vec<String>,
+    pub qualifier_violations: Vec<String>,
+    pub found: usize,
+    pub verified: usize,
+}
+
+fn metric_value(raw: &str) -> String {
+    let lowered = raw.trim().to_lowercase();
+    for qualifier in ["up to", "about", "approximately", "approx.", "approx", "~"] {
+        if let Some(rest) = lowered.strip_prefix(qualifier) {
+            return rest.trim().to_string();
+        }
+    }
+    lowered
+}
+
+pub(crate) fn verify_metrics(draft: &str, claims: &[Claim]) -> MetricVerification {
+    let claim_metrics: Vec<(String, Option<String>)> = claims
+        .iter()
+        .flat_map(|claim| {
+            extract_metrics(&claim.confirmed_wording)
+                .into_iter()
+                .chain(extract_metrics(&claim.statement))
+        })
+        .map(|metric| (metric_value(&metric.raw), metric.qualifier))
+        .collect();
+
+    let mut verification = MetricVerification::default();
+    for metric in extract_metrics(draft) {
+        verification.found += 1;
+        let value = metric_value(&metric.raw);
+        let matches: Vec<Option<String>> = claim_metrics
+            .iter()
+            .filter(|(claim_value, _)| *claim_value == value)
+            .map(|(_, qualifier)| qualifier.clone())
+            .collect();
+
+        if matches.is_empty() {
+            verification.unverified.push(metric.raw);
+            continue;
+        }
+
+        if matches.iter().any(|qualifier| qualifier.as_deref() == metric.qualifier.as_deref()) {
+            verification.verified += 1;
+        } else {
+            let confirmed: Vec<String> = matches.into_iter().flatten().collect();
+            let confirmed = if confirmed.is_empty() {
+                "no qualifier".to_string()
+            } else {
+                confirmed.join(" / ")
+            };
+            verification.qualifier_violations.push(format!(
+                "'{}' drops or changes the confirmed qualifier ({})",
+                metric.raw, confirmed
+            ));
+        }
+    }
+
+    verification
+}
+
+#[cfg(test)]
+mod metric_tests {
+    use super::{verify_metrics, Claim};
+
+    fn claim(wording: &str) -> Claim {
+        Claim {
+            id: "claim-1".to_string(),
+            statement: wording.to_string(),
+            evidence_source: "resume".to_string(),
+            confirmed_wording: wording.to_string(),
+            scope: "within the team".to_string(),
+            category: "project".to_string(),
+            status: "confirmed".to_string(),
+            last_confirmed_at: "2026-01-01".to_string(),
+            evidence_type: "performance_review".to_string(),
+            evidence_sha256: "abc".to_string(),
+            verified_by: "Jane".to_string(),
+        }
+    }
+
+    #[test]
+    fn confirmed_qualifier_is_accepted() {
+        let report = verify_metrics("reached up to 50% adoption", &[claim("Reached up to 50% adoption")]);
+        assert_eq!(report.verified, 1);
+        assert!(report.qualifier_violations.is_empty());
+    }
+
+    #[test]
+    fn dropped_qualifier_is_a_violation() {
+        let report = verify_metrics("reached 50% adoption", &[claim("Reached up to 50% adoption")]);
+        assert_eq!(report.found, 1);
+        assert_eq!(report.qualifier_violations.len(), 1);
+    }
+
+    #[test]
+    fn added_qualifier_is_a_violation() {
+        let report = verify_metrics("reached up to 50% adoption", &[claim("Reached 50% adoption")]);
+        assert_eq!(report.qualifier_violations.len(), 1);
+    }
+
+    #[test]
+    fn unsupported_number_is_unverified() {
+        let report = verify_metrics("saved $4.2m", &[claim("Saved $1.2m")]);
+        assert_eq!(report.unverified.len(), 1);
+    }
 }

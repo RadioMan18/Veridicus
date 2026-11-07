@@ -248,14 +248,56 @@ pub fn save_claims(
     for claim in claims {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
+        let status = match claim.status.as_str() {
+            "confirmed" | "needs-confirmation" | "rejected" => claim.status.as_str(),
+            _ => "needs-confirmation",
+        };
+        let evidence_type = crate::claims::normalized_evidence_type(&claim.evidence_type);
+        let evidence_sha256 = crate::claims::claim_evidence_sha256(
+            &claim.statement,
+            &claim.evidence_source,
+            &evidence_type,
+            &claim.scope,
+            &claim.category,
+        );
+        let verified_by = if status == "confirmed" {
+            crate::claims::verifier_name(&conn)
+        } else {
+            String::new()
+        };
+
+        // Confirming a staged import promotes the existing row instead of duplicating it.
+        let promoted = conn.execute(
+            "UPDATE claims SET status = ?1, last_confirmed_at = ?2, evidence_type = ?3,
+             evidence_sha256 = ?4, verified_by = ?5, evidence_source = ?6
+             WHERE statement = ?7 AND confirmed_wording = ?8
+               AND scope = ?9 AND category = ?10 AND status = 'needs-confirmation'",
+            [
+                status,
+                now.as_str(),
+                evidence_type.as_str(),
+                evidence_sha256.as_str(),
+                verified_by.as_str(),
+                claim.evidence_source.as_str(),
+                claim.statement.as_str(),
+                claim.confirmed_wording.as_str(),
+                claim.scope.as_str(),
+                claim.category.as_str(),
+            ],
+        ).map_err(|e| format!("Failed to confirm claim: {}", e))?;
+
+        if promoted > 0 {
+            count += promoted;
+            continue;
+        }
 
         let inserted = conn.execute(
-            "INSERT INTO claims (id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at)
-             SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7
+            "INSERT INTO claims (id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at, evidence_type, evidence_sha256, verified_by)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11
              WHERE NOT EXISTS (
                  SELECT 1 FROM claims
                  WHERE statement = ?2 AND evidence_source = ?3 AND confirmed_wording = ?4
-                   AND scope = ?5 AND category = ?6 AND status = 'confirmed'
+                   AND scope = ?5 AND category = ?6
              )",
             [
                 id.as_str(),
@@ -264,13 +306,19 @@ pub fn save_claims(
                 claim.confirmed_wording.as_str(),
                 claim.scope.as_str(),
                 claim.category.as_str(),
+                status,
                 now.as_str(),
+                evidence_type.as_str(),
+                evidence_sha256.as_str(),
+                verified_by.as_str(),
             ],
         ).map_err(|e| format!("Failed to save claim: {}", e))?;
         count += inserted;
     }
 
-    update_setup_step(&conn, "claims")?;
+    if count > 0 {
+        update_setup_step(&conn, "claims")?;
+    }
 
     Ok(count)
 }
@@ -409,6 +457,8 @@ pub struct ClaimSuggestion {
     pub confirmed_wording: String,
     pub scope: String,
     pub category: String,
+    #[serde(default)]
+    pub evidence_type: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -432,6 +482,7 @@ pub fn parse_claims_from_resume(resume: &str) -> Vec<ClaimSuggestion> {
                 confirmed_wording: line.trim().to_string(),
                 scope: "tenure".to_string(),
                 category: "tenure".to_string(),
+                evidence_type: "resume".to_string(),
             });
         }
 
@@ -444,6 +495,7 @@ pub fn parse_claims_from_resume(resume: &str) -> Vec<ClaimSuggestion> {
                 confirmed_wording: line.trim().to_string(),
                 scope: "metric".to_string(),
                 category: "metric".to_string(),
+                evidence_type: "resume".to_string(),
             });
         }
 
@@ -457,18 +509,9 @@ pub fn parse_claims_from_resume(resume: &str) -> Vec<ClaimSuggestion> {
                 confirmed_wording: line.trim().to_string(),
                 scope: "tool".to_string(),
                 category: "tool".to_string(),
+                evidence_type: "resume".to_string(),
             });
         }
-    }
-
-    if suggestions.is_empty() {
-        suggestions.push(ClaimSuggestion {
-            statement: "Professional experience in software development".to_string(),
-            evidence_source: "resume".to_string(),
-            confirmed_wording: "Professional experience in software development".to_string(),
-            scope: "general".to_string(),
-            category: "tenure".to_string(),
-        });
     }
 
     suggestions
