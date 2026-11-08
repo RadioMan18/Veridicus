@@ -50,6 +50,9 @@ pub struct SkillExecutionResult {
     /// Set when the posting exceeded the prompt budget and its tail was omitted.
     #[serde(default)]
     pub jd_truncated: bool,
+    /// Open fact markers the prompt warned the model about, as `claim: markers`.
+    #[serde(default)]
+    pub open_markers: Vec<String>,
 }
 
 /// Input parameters for executing a guardrailed skill.
@@ -61,10 +64,83 @@ pub struct SkillExecutionInput {
     pub use_deep_model: bool,
     #[serde(default)]
     pub required_gaps: Vec<crate::guardrails::RequiredGap>,
+    /// Posting terms the ledger does not yet show. They are offered to the model
+    /// as terms to cover *where a claim supports them*, never as facts to add.
+    #[serde(default)]
+    pub coverage_terms: Vec<String>,
 }
 
 /// Current on-disk skill template format. Bumped when a shipped template must be replaced.
 pub const TEMPLATE_VERSION: u32 = 3;
+
+/// Human-fill markers. They mean "the ledger cannot supply this fact yet", so
+/// they are only ever valid in bullet review, and never in a compiled document.
+pub const BULLET_MARKERS: [&str; 3] = ["[ADD METRIC]", "[ADD SCOPE]", "[ADD TOOL]"];
+
+/// A fact the user still owes, recorded against the claim it concerns.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenMarker {
+    pub claim_id: String,
+    pub markers: Vec<String>,
+    pub original: String,
+    pub rewrite: String,
+    pub recorded_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct MarkerRecord {
+    #[serde(default)]
+    markers: Vec<String>,
+    #[serde(default)]
+    original: String,
+    #[serde(default)]
+    rewrite: String,
+    #[serde(default)]
+    recorded_at: String,
+}
+
+/// Every recorded marker decision. A malformed row is skipped: it must not block
+/// document generation.
+pub(crate) fn open_markers(conn: &rusqlite::Connection) -> Result<Vec<OpenMarker>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT key, value FROM app_settings WHERE key LIKE 'bullet_marker:%' ORDER BY key",
+        )
+        .map_err(|error| format!("Failed to prepare marker query: {}", error))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|error| format!("Failed to query marker decisions: {}", error))?;
+
+    let mut markers = Vec::new();
+    for (key, value) in rows.flatten() {
+        let Some(claim_id) = key.strip_prefix("bullet_marker:") else {
+            continue;
+        };
+        let Ok(record) = serde_json::from_str::<MarkerRecord>(&value) else {
+            continue;
+        };
+        markers.push(OpenMarker {
+            claim_id: claim_id.to_string(),
+            markers: record.markers,
+            original: record.original,
+            rewrite: record.rewrite,
+            recorded_at: record.recorded_at,
+        });
+    }
+    Ok(markers)
+}
+
+/// Markers present in a text, matched case-insensitively.
+pub fn markers_in(text: &str) -> Vec<String> {
+    let upper = text.to_ascii_uppercase();
+    BULLET_MARKERS
+        .iter()
+        .filter(|marker| upper.contains(&marker.to_ascii_uppercase()))
+        .map(|marker| marker.to_string())
+        .collect()
+}
 
 /// Upper bound on posting text placed in a prompt. Beyond this the model's
 /// context window drops the tail anyway, so it is cut explicitly, marked, and
@@ -193,6 +269,7 @@ fn default_skill_templates() -> Vec<(&'static str, &'static str)> {
     vec![
         ("resume-tailor", RESUME_TAILOR_TEMPLATE),
         ("cover-letter", COVER_LETTER_TEMPLATE),
+        ("bullet-review", BULLET_REVIEW_TEMPLATE),
     ]
 }
 
@@ -240,6 +317,21 @@ Mirror the language of the job description only where a confirmed claim supports
 If the reference data lists gaps the letter must name, name each gap plainly in one sentence next to the adjacent strength. Never hide a required gap.
 Never use placeholder brackets for names, companies, email addresses, phone numbers, or dates. If contact details are unavailable, omit them instead of guessing.
 Return only the finished letter, with no commentary before or after it.
+"#;
+
+const BULLET_REVIEW_TEMPLATE: &str = r#"---
+name: Bullet Review
+description: Strengthen resume bullets against the confirmed claims ledger
+applies_to: resume
+model: fast
+template_version: 3
+---
+You strengthen individual resume bullets.
+Rewrite each bullet so it states the action, the task it served, and the result, in one or two sentences.
+Every number in a rewrite must already appear in a confirmed claim; never invent a metric, employer, title, date, tool, or scope.
+When a bullet would be stronger with a fact the ledger does not contain, append the matching marker and nothing else: [ADD METRIC] for a missing number, [ADD SCOPE] for a missing audience or scale, [ADD TOOL] for a missing tool or method. Never invent the fact behind a marker.
+If no confirmed claim supports a bullet, leave its rewrite empty instead of inventing support.
+Return only JSON with a bullets array; each entry has an original key and a rewrite key, one entry per input bullet, in input order.
 "#;
 
 /// Create missing shipped templates and upgrade legacy ones, keeping a backup of
@@ -439,6 +531,51 @@ fn assemble_guardrailed_prompt(skill: &SkillTemplate, rules: &[String]) -> Strin
 }
 
 
+/// Ask the resume to cover posting vocabulary it can honestly support. This is a
+/// coverage request, not a second summariser: the existing skill still writes the
+/// document, and every term remains subordinate to the ledger.
+fn with_coverage_terms(mut source: String, terms: &[String]) -> String {
+    let terms: Vec<&str> = terms
+        .iter()
+        .map(|term| term.trim())
+        .filter(|term| !term.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return source;
+    }
+    source.push_str("\n## Posting terms to cover where the ledger supports them\n");
+    source.push_str(
+        "Use a term only when a confirmed claim supports the statement. Do not add a tool, \
+skill, or number that no claim contains; leave the term out instead.\n",
+    );
+    for term in terms {
+        source.push_str(&format!("- {}\n", term));
+    }
+    source
+}
+
+/// Bullet review may record a fact the ledger cannot supply. Tell the resume
+/// prompt about it before writing, so the gap is not quietly papered over.
+fn with_open_markers(mut source: String, markers: &[OpenMarker]) -> String {
+    if markers.is_empty() {
+        return source;
+    }
+    source.push_str("\n## Open facts the candidate still owes\n");
+    source.push_str(
+        "These bullets await a fact the ledger does not contain. Do not invent it and do not \
+assert it; write the bullet without that fact or omit the bullet.\n",
+    );
+    for marker in markers {
+        source.push_str(&format!(
+            "- claim {}: {} — \"{}\"\n",
+            marker.claim_id,
+            marker.markers.join(", "),
+            marker.original
+        ));
+    }
+    source
+}
+
 fn with_required_gaps(mut source: String, gaps: &[crate::guardrails::RequiredGap]) -> String {
     if gaps.is_empty() {
         return source;
@@ -540,6 +677,15 @@ fn generated_document_problem(skill_id: &str, output: &str) -> Option<String> {
     let normalized = output.to_lowercase();
     if output.trim().is_empty() {
         return Some("the model returned an empty document".to_string());
+    }
+
+    // Markers ask the user to supply a fact; only bullet review may emit them.
+    let markers = markers_in(output);
+    if !markers.is_empty() && skill_id != "bullet-review" {
+        return Some(format!(
+            "human-fill markers may only appear in bullet review, found {}",
+            markers.join(", ")
+        ));
     }
 
     let has_prompt_section = normalized.lines().any(|line| {
@@ -730,6 +876,7 @@ pub async fn execute_skill(
             template_version: TEMPLATE_VERSION,
             untrusted_input_warning: None,
             jd_truncated: false,
+            open_markers: Vec::new(),
         });
     }
 
@@ -779,6 +926,18 @@ pub async fn execute_skill(
     );
     let source_material = if input.skill_id == "cover-letter" {
         with_required_gaps(source_material, &input.required_gaps)
+    } else {
+        with_coverage_terms(source_material, &input.coverage_terms)
+    };
+    // Consume marker decisions on the resume path: the prompt names the facts the
+    // candidate still owes and forbids inventing them.
+    let open_markers = if input.skill_id == "resume-tailor" {
+        open_markers(&conn).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let source_material = if input.skill_id == "resume-tailor" {
+        with_open_markers(source_material, &open_markers)
     } else {
         source_material
     };
@@ -885,6 +1044,10 @@ pub async fn execute_skill(
         template_version: TEMPLATE_VERSION,
         untrusted_input_warning,
         jd_truncated,
+        open_markers: open_markers
+            .iter()
+            .map(|marker| format!("{}: {}", marker.claim_id, marker.markers.join(", ")))
+            .collect(),
     })
 }
 
@@ -946,8 +1109,9 @@ pub fn seed_default_skills() -> Result<usize, String> {
 mod tests {
     use super::{
         assemble_source_material, build_document_retry_request, clean_generated_markdown,
-        deduplicate_claims, generated_document_problem, select_claims_for_prompt,
-        validate_master_resume, Claim, MAX_MASTER_RESUME_BYTES, MAX_PROMPT_CLAIM_BYTES,
+        deduplicate_claims, generated_document_problem, markers_in, select_claims_for_prompt,
+        validate_master_resume, with_open_markers, Claim, OpenMarker, MAX_MASTER_RESUME_BYTES,
+        MAX_PROMPT_CLAIM_BYTES,
     };
 
     fn claim(id: &str, wording: &str) -> Claim {
@@ -977,7 +1141,39 @@ mod tests {
     }
 
     #[test]
+    fn open_markers_reach_the_resume_prompt() {
+        let marker = OpenMarker {
+            claim_id: "claim-1".to_string(),
+            markers: vec!["[ADD SCOPE]".to_string()],
+            original: "Cut reporting costs".to_string(),
+            rewrite: String::new(),
+            recorded_at: "2026-11-08".to_string(),
+        };
+        let prompt = with_open_markers("BASE".to_string(), &[marker]);
+        assert!(prompt.contains("Open facts the candidate still owes"));
+        assert!(prompt.contains("claim-1: [ADD SCOPE]"));
+        assert!(prompt.contains("Cut reporting costs"));
+        assert!(prompt.contains("Do not invent"));
+        assert_eq!(with_open_markers("BASE".to_string(), &[]), "BASE");
+    }
+
+    #[test]
+    fn markers_are_only_allowed_in_bullet_review() {
+        let with_marker = "## Experience\n- Cut reporting costs by 12% [ADD SCOPE]";
+        assert!(
+            generated_document_problem("resume-tailor", with_marker).is_some(),
+            "a marker may not appear in a resume"
+        );
+        assert!(
+            generated_document_problem("bullet-review", with_marker).is_none(),
+            "bullet review is the one surface markers belong to"
+        );
+        assert_eq!(markers_in("[ADD METRIC] and [add tool]").len(), 2);
+    }
+
+    #[test]
     fn duplicate_imports_only_contribute_one_prompt_claim() {
+
         let claims = deduplicate_claims(vec![
             claim("first-import", "Built reliable systems."),
             claim("second-import", "Built reliable systems."),
@@ -1220,15 +1416,23 @@ mod template_tests {
             let (header, body) = split_frontmatter(content);
             assert!(header.is_some(), "{} must keep frontmatter metadata", id);
             assert!(!body.trim().is_empty(), "{} must have a prompt body", id);
-            assert!(!body.contains('['), "{} must not contain bracketed placeholders", id);
-            assert!(!body.contains(']'), "{} must not contain bracketed placeholders", id);
+            // Markers are allowed only in bullet review; everywhere else a bracket
+            // means a placeholder the validator will reject at generation time.
+            let mut without_markers = body.to_string();
+            if id == "bullet-review" {
+                for marker in super::BULLET_MARKERS {
+                    without_markers = without_markers.replace(marker, "");
+                }
+            }
+            assert!(!without_markers.contains('['), "{} must not contain bracketed placeholders", id);
+            assert!(!without_markers.contains(']'), "{} must not contain bracketed placeholders", id);
         }
     }
 
     #[test]
     fn seeded_templates_are_written_then_upgraded_once_with_a_backup() {
         let root = unique_workspace("seed");
-        assert_eq!(ensure_default_skill_templates(&root).unwrap(), 2);
+        assert_eq!(ensure_default_skill_templates(&root).unwrap(), 3);
 
         let dir = root.join(".careeros").join("skills");
         assert_eq!(

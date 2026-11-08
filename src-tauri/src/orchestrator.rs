@@ -499,10 +499,21 @@ pub async fn execute_apply_workflow(
     if let Some(gaps) = result.gap_analysis.as_ref() {
         match crate::guardrails::persist_gaps(&conn, &app_id, gaps) {
             Ok(persisted) => {
+                // A gap the user accepted as unaddressed stops being required in
+                // the letter, but `accepted_gap_requirements` reports it below.
                 required_gaps = persisted
                     .into_iter()
-                    .filter(|gap| gap.requirement_tier == "must_have" || gap.requirement_tier == "gate")
+                    .filter(|gap| {
+                        (gap.requirement_tier == "must_have" || gap.requirement_tier == "gate")
+                            && gap.status != "accepted_by_user"
+                    })
                     .collect();
+                // The matrix is what the review screen renders; store the exact
+                // analysis that produced this application's documents.
+                let _ = fs::write(
+                    app_dir.join("fit-matrix.json"),
+                    serde_json::to_string_pretty(gaps).unwrap_or_default(),
+                );
             }
             Err(error) => {
                 emit_stage(&app, "gap", "Gap analysis against claims ledger", "failed", Some(error.clone()));
@@ -511,6 +522,21 @@ pub async fn execute_apply_workflow(
             }
         }
     }
+
+    // Posting terms nothing in the ledger covers yet. The resume skill is asked to
+    // cover them only where a claim already supports the statement.
+    let coverage_terms: Vec<String> = result
+        .gap_analysis
+        .as_ref()
+        .map(|gaps| {
+            gaps.ats_keywords
+                .iter()
+                .filter(|entry| !entry.in_resume && !entry.in_claims)
+                .map(|entry| entry.term.clone())
+                .take(12)
+                .collect()
+        })
+        .unwrap_or_default();
 
     // 3. Execute guardrailed skills (resume-tailor and cover-letter)
     // Pass the extracted requirements alongside the description so tailoring can target them.
@@ -536,6 +562,7 @@ pub async fn execute_apply_workflow(
             jd_text: Some(jd_text.clone()),
             use_deep_model: true,
             required_gaps: Vec::new(),
+            coverage_terms: coverage_terms.clone(),
         },
         state.clone(),
     ).await;
@@ -562,6 +589,7 @@ pub async fn execute_apply_workflow(
             jd_text: Some(jd_text.clone()),
             use_deep_model: true,
             required_gaps: required_gaps.clone(),
+            coverage_terms: Vec::new(),
         },
         state.clone(),
     ).await;
@@ -783,6 +811,18 @@ pub async fn execute_apply_workflow(
                     blocking: false,
                 });
             }
+            // A must-have the user chose to leave unaddressed is a decision, not a
+            // silence: it is reported here and carried into the audit record.
+            for requirement in crate::guardrails::accepted_gap_requirements(&conn, &app_id) {
+                report.findings.push(crate::guardrails::GuardrailFinding {
+                    code: "gap_intentionally_unaddressed".to_string(),
+                    message: format!(
+                        "you chose to leave this requirement unaddressed: {}",
+                        requirement
+                    ),
+                    blocking: false,
+                });
+            }
             report.blocking = report.findings.iter().any(|finding| finding.blocking);
             report.passed = !report.blocking;
             let _ = fs::write(
@@ -910,8 +950,15 @@ pub async fn execute_apply_workflow(
         |row| row.get::<_, i64>(0),
     ).unwrap_or(0).to_string();
     // This column records confirmed wording approved for reuse, not a generated document.
-    // Writing the letter here made later employer-consistency checks compare against prose.
-    let approved_wording = String::new();
+    // It is populated by the approval UI, so commit must preserve it instead of
+    // overwriting it with an empty string (D8).
+    let approved_wording: String = conn
+        .query_row(
+            "SELECT approved_wording FROM application_records WHERE id = ?1",
+            [app_id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
     let materials_version = crate::compliance::materials_version(&app_dir);
 
     conn.execute(
@@ -1106,43 +1153,6 @@ pub async fn run_company_research(company: String, state: State<'_, AppState>) -
     )
     .await
     .map_err(|e| format!("Company research failed: {}", e))?;
-
-    Ok(response.message.content)
-}
-
-/// Run interview simulator (/mock command).
-#[tauri::command]
-pub async fn start_interview_simulator(role: String, state: State<'_, AppState>) -> Result<String, String> {
-    let ollama_config = crate::ollama::get_ollama_config(state);
-    let config = ollama_config.unwrap_or_default();
-    let model = config.deep_model.clone().or_else(|| config.fast_model.clone()).unwrap_or_else(|| "llama3.2:latest".to_string());
-
-    let prompt = format!(
-        "You are a hiring manager interviewing a candidate for a {} role. Conduct a STAR-method behavioral interview. Ask one question at a time, wait for the user's response, then provide feedback and ask the next question. Start with an introduction and the first question.",
-        role
-    );
-
-    let messages = vec![
-        crate::ollama::OllamaChatMessage {
-            role: "system".to_string(),
-            content: "You are an experienced hiring manager conducting behavioral interviews using the STAR method.".to_string(),
-        },
-        crate::ollama::OllamaChatMessage {
-            role: "user".to_string(),
-            content: prompt,
-        },
-    ];
-
-    let response = crate::ollama::chat_with_ollama_async(
-        model,
-        messages,
-        Some(0.5),
-        Some(800),
-        None,
-        config.num_ctx,
-    )
-    .await
-    .map_err(|e| format!("Interview simulator failed: {}", e))?;
 
     Ok(response.message.content)
 }
@@ -1756,6 +1766,24 @@ pub async fn export_ats_resume(
         .unwrap_or_else(default_export_dir);
 
     crate::resume_exporter::export_ats_resume(&markdown, export_format, &out_dir, &app)
+}
+
+/// The fit matrix as it stood when this application was analysed.
+#[tauri::command]
+pub fn get_fit_matrix(
+    application_id: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let _ = state;
+    let docs = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
+    let path = docs
+        .join("CareerOS")
+        .join("applications")
+        .join(&application_id)
+        .join("fit-matrix.json");
+    let text = fs::read_to_string(&path)
+        .map_err(|_| "No fit matrix has been saved for this application yet.".to_string())?;
+    serde_json::from_str(&text).map_err(|error| format!("Failed to read the fit matrix: {}", error))
 }
 
 #[tauri::command]

@@ -8,6 +8,7 @@ import {
   Plus,
   Search,
   Settings as SettingsIcon,
+  Target,
 } from 'lucide-react';
 import CommandPalette, { type PaletteEntry } from './CommandPalette';
 import ApplicationLedger from './ApplicationLedger';
@@ -19,6 +20,7 @@ import SetupWizard from './SetupWizard';
 import DashboardView from './DashboardView';
 import DocumentsView from './DocumentsView';
 import PrepView from './PrepView';
+import FitView from './FitView';
 import SettingsView from './SettingsView';
 import Dialog from './Dialog';
 import ShortcutSheet from './ShortcutSheet';
@@ -41,13 +43,14 @@ interface AiDisclosureState {
   text: string;
 }
 
-type View = 'dashboard' | 'applications' | 'documents' | 'prep' | 'settings';
+type View = 'dashboard' | 'applications' | 'documents' | 'prep' | 'fit' | 'settings';
 
 const NAV: { id: View; label: string; icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'applications', label: 'Applications', icon: Briefcase },
   { id: 'documents', label: 'Documents', icon: FileText },
   { id: 'prep', label: 'Prep', icon: Compass },
+  { id: 'fit', label: 'Role fit', icon: Target },
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ];
 
@@ -359,7 +362,8 @@ export default function AppShell() {
               onExport={openExport}
             />
           )}
-          {view === 'prep' && <PrepView />}
+          {view === 'prep' && <PrepView onOpenFit={() => setView('fit')} />}
+          {view === 'fit' && <FitView onStartApply={() => openCommandPalette('/apply ')} />}
           {view === 'settings' && (
             <SettingsView
               workspacePath={workspace?.root_path || ''}
@@ -381,6 +385,7 @@ export default function AppShell() {
         history={paletteHistory}
         onHistory={(entry) => setPaletteHistory((previous) => [...previous, entry].slice(-60))}
         onApplyComplete={(result) => setApplyResult(result)}
+        onOpenFit={() => setView('fit')}
       />
       {applyResult && (
         <ApplicationDetail result={applyResult} onClose={() => setApplyResult(null)} />

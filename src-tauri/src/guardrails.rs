@@ -11,9 +11,13 @@ use std::collections::HashSet;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
+use tauri::State;
+
 use crate::claims::Claim;
+use crate::db::get_db_connection;
 use crate::fact_check;
 use crate::gap_analyzer::{AnalysisResult, RequirementTier};
+use crate::AppState;
 
 pub const RESUME: &str = "resume";
 pub const COVER_LETTER: &str = "cover_letter";
@@ -549,47 +553,191 @@ fn tier_name(tier: &RequirementTier) -> &'static str {
     }
 }
 
-/// Replace the persisted gaps for an application and return them for prompt use.
+/// Persist the analysed gaps, keyed on (application, requirement).
+///
+/// Re-analysis refreshes the tier and the matrix text but keeps the row id, the
+/// user's decision and any attached stories. The old delete-and-insert wiped a
+/// choice the moment `/apply` ran again.
 pub fn persist_gaps(
     conn: &Connection,
     application_id: &str,
     analysis: &AnalysisResult,
 ) -> Result<Vec<RequiredGap>, String> {
-    conn.execute("DELETE FROM gaps WHERE application_id = ?1", [application_id])
-        .map_err(|error| format!("Failed to clear previous gaps: {}", error))?;
-
     let mut saved = Vec::new();
     for gap in &analysis.identified_gaps {
-        let id = uuid::Uuid::new_v4().to_string();
         let tier = tier_name(&gap.requirement_tier);
         // A gap by definition has no matching claim, so this must bind NULL.
         // An empty string is not NULL and violates the `REFERENCES claims(id)`
         // foreign key, which aborted every /apply that found a gap.
-        conn.execute(
-            "INSERT INTO gaps (id, application_id, requirement, requirement_tier, matched_claim_id, adjacent_strength, letter_line, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open')",
-            rusqlite::params![
-                id,
-                application_id,
-                gap.requirement,
-                tier,
-                gap.matched_claim_id,
-                gap.adjacent_strength,
-                gap.proposed_letter_line,
-            ],
-        )
-        .map_err(|error| format!("Failed to persist gap: {}", error))?;
+        let existing = match conn.query_row(
+            "SELECT id, status FROM gaps WHERE application_id = ?1 AND requirement = ?2",
+            rusqlite::params![application_id, gap.requirement],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        ) {
+            Ok(row) => Some(row),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(error) => return Err(format!("Failed to look up existing gap: {}", error)),
+        };
+
+        let (id, status) = match existing {
+            Some((id, status)) => {
+                conn.execute(
+                    "UPDATE gaps SET requirement_tier = ?1, matched_claim_id = ?2, adjacent_strength = ?3, letter_line = ?4, cv_focus = ?5, cover_letter_point = ?6 WHERE id = ?7",
+                    rusqlite::params![
+                        tier,
+                        gap.matched_claim_id,
+                        gap.adjacent_strength,
+                        gap.proposed_letter_line,
+                        gap.cv_focus,
+                        gap.cover_letter_point,
+                        id,
+                    ],
+                )
+                .map_err(|error| format!("Failed to update gap: {}", error))?;
+                (id, status)
+            }
+            None => {
+                let id = uuid::Uuid::new_v4().to_string();
+                conn.execute(
+                    "INSERT INTO gaps (id, application_id, requirement, requirement_tier, matched_claim_id, adjacent_strength, letter_line, cv_focus, cover_letter_point, story_ids, status)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', 'open')",
+                    rusqlite::params![
+                        id,
+                        application_id,
+                        gap.requirement,
+                        tier,
+                        gap.matched_claim_id,
+                        gap.adjacent_strength,
+                        gap.proposed_letter_line,
+                        gap.cv_focus,
+                        gap.cover_letter_point,
+                    ],
+                )
+                .map_err(|error| format!("Failed to persist gap: {}", error))?;
+                (id, "open".to_string())
+            }
+        };
 
         saved.push(RequiredGap {
             id,
             requirement: gap.requirement.clone(),
             requirement_tier: tier.to_string(),
             adjacent_strength: gap.adjacent_strength.clone(),
-            status: "open".to_string(),
+            status,
         });
     }
 
     Ok(saved)
+}
+
+/// Requirements the user chose to leave unaddressed.
+///
+/// They stop being required in the letter, but the gate still reports them as a
+/// deliberate omission instead of letting the application pass in silence.
+pub fn accepted_gap_requirements(conn: &Connection, application_id: &str) -> Vec<String> {
+    let Ok(mut statement) = conn.prepare(
+        "SELECT requirement FROM gaps WHERE application_id = ?1 AND status = 'accepted_by_user'",
+    ) else {
+        return Vec::new();
+    };
+
+    statement
+        .query_map([application_id], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(|row| row.ok()).collect())
+        .unwrap_or_default()
+}
+
+/// One persisted gap, including the fields the fit matrix renders.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GapRow {
+    pub id: String,
+    pub requirement: String,
+    pub requirement_tier: String,
+    pub adjacent_strength: String,
+    pub letter_line: Option<String>,
+    pub cv_focus: String,
+    pub cover_letter_point: String,
+    pub story_ids: Vec<String>,
+    pub status: String,
+}
+
+fn open_connection(state: &State<'_, AppState>) -> Result<Connection, String> {
+    let db_path = {
+        let db_path_opt = state.db_path.lock().unwrap();
+        db_path_opt
+            .as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    get_db_connection(&db_path)
+}
+
+/// Gaps for one application, with the matrix fields.
+#[tauri::command]
+pub fn list_gaps(
+    application_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<GapRow>, String> {
+    let conn = open_connection(&state)?;
+    let mut statement = conn
+        .prepare(
+            "SELECT id, requirement, requirement_tier, adjacent_strength, letter_line, cv_focus, cover_letter_point, story_ids, status
+             FROM gaps WHERE application_id = ?1 ORDER BY requirement_tier, requirement",
+        )
+        .map_err(|error| format!("Failed to prepare gap query: {}", error))?;
+
+    let rows = statement
+        .query_map([application_id], |row| {
+            let story_ids: String = row.get(7)?;
+            Ok(GapRow {
+                id: row.get(0)?,
+                requirement: row.get(1)?,
+                requirement_tier: row.get(2)?,
+                adjacent_strength: row.get(3)?,
+                letter_line: row.get(4)?,
+                cv_focus: row.get(5)?,
+                cover_letter_point: row.get(6)?,
+                story_ids: story_ids
+                    .split(',')
+                    .map(|id| id.trim().to_string())
+                    .filter(|id| !id.is_empty())
+                    .collect(),
+                status: row.get(8)?,
+            })
+        })
+        .map_err(|error| format!("Failed to query gaps: {}", error))?
+        .filter_map(|row| row.ok())
+        .collect();
+
+    Ok(rows)
+}
+
+/// Record a gap decision. Must-haves remain enforced unless the user explicitly
+/// accepts the gap as unaddressed, which the gate then reports as a finding.
+#[tauri::command]
+pub fn set_gap_status(
+    gap_id: String,
+    status: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    const ALLOWED: [&str; 3] = ["open", "named_in_letter", "accepted_by_user"];
+    if !ALLOWED.contains(&status.as_str()) {
+        return Err(format!("Unknown gap status: {}", status));
+    }
+
+    let conn = open_connection(&state)?;
+    let updated = conn
+        .execute(
+            "UPDATE gaps SET status = ?1 WHERE id = ?2",
+            rusqlite::params![status, gap_id],
+        )
+        .map_err(|error| format!("Failed to update the gap: {}", error))?;
+
+    if updated == 0 {
+        return Err("No gap with that id".to_string());
+    }
+
+    Ok(true)
 }
 
 /// Gaps that must be named in the letter: must-have and gate items still open.
@@ -622,6 +770,95 @@ pub fn required_gaps_for(
         .collect();
 
     Ok(gaps)
+}
+
+#[cfg(test)]
+mod gap_decision_tests {
+    use super::{accepted_gap_requirements, persist_gaps};
+    use crate::gap_analyzer::{AnalysisResult, GapEntry, RequirementTier};
+
+    fn analysis() -> AnalysisResult {
+        AnalysisResult {
+            supported_claim_ids: Vec::new(),
+            identified_gaps: vec![GapEntry {
+                requirement: "Own the learning technology roadmap".to_string(),
+                requirement_tier: RequirementTier::MustHave,
+                matched_claim_id: None,
+                adjacent_strength: "adjacent".to_string(),
+                proposed_letter_line: "line".to_string(),
+                cv_focus: "focus".to_string(),
+                cover_letter_point: "point".to_string(),
+                story_ids: Vec::new(),
+            }],
+            ask_first_triggered: Vec::new(),
+            ambiguous_requirements: Vec::new(),
+            hiring_goals: Vec::new(),
+            standout_traits: Vec::new(),
+            ats_keywords: Vec::new(),
+        }
+    }
+
+    fn database() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE application_records (
+                id TEXT PRIMARY KEY, employer TEXT NOT NULL, role TEXT NOT NULL, req_id TEXT,
+                date TEXT NOT NULL, base_resume_version TEXT NOT NULL, materials_version TEXT NOT NULL,
+                claims_used TEXT NOT NULL, approved_wording TEXT NOT NULL, gaps_named TEXT NOT NULL,
+                salary_entered TEXT, status TEXT, notes TEXT);
+             CREATE TABLE claims (id TEXT PRIMARY KEY);
+             CREATE TABLE gaps (
+                id TEXT PRIMARY KEY, application_id TEXT NOT NULL, requirement TEXT NOT NULL,
+                requirement_tier TEXT, matched_claim_id TEXT REFERENCES claims(id),
+                adjacent_strength TEXT NOT NULL, letter_line TEXT, status TEXT,
+                FOREIGN KEY(application_id) REFERENCES application_records(id));",
+        )
+        .expect("schema");
+        crate::db::ensure_gap_columns(&conn).expect("migration");
+        conn.execute(
+            "INSERT INTO application_records (id, employer, role, date, base_resume_version, materials_version, claims_used, approved_wording, gaps_named)
+             VALUES ('app-1','Acme','Engineer','2026-11-08','v1','v1','','','0')",
+            [],
+        )
+        .expect("application");
+        conn
+    }
+
+    #[test]
+    fn a_user_gap_decision_survives_reanalysis() {
+        let conn = database();
+        let first = persist_gaps(&conn, "app-1", &analysis()).expect("first persist");
+        assert_eq!(first.len(), 1);
+        conn.execute(
+            "UPDATE gaps SET status = 'accepted_by_user' WHERE id = ?1",
+            [&first[0].id],
+        )
+        .expect("decision");
+
+        let second = persist_gaps(&conn, "app-1", &analysis()).expect("second persist");
+        assert_eq!(second[0].id, first[0].id, "the gap keeps its identity");
+        assert_eq!(second[0].status, "accepted_by_user", "the decision survives");
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM gaps", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "re-analysis must not duplicate rows");
+    }
+
+    #[test]
+    fn accepted_gaps_are_reported_not_silently_skipped() {
+        let conn = database();
+        let saved = persist_gaps(&conn, "app-1", &analysis()).expect("persist");
+        conn.execute(
+            "UPDATE gaps SET status = 'accepted_by_user' WHERE id = ?1",
+            [&saved[0].id],
+        )
+        .unwrap();
+
+        let accepted = accepted_gap_requirements(&conn, "app-1");
+        assert_eq!(accepted.len(), 1);
+        assert!(accepted[0].contains("learning technology"));
+    }
 }
 
 #[cfg(test)]

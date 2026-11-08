@@ -61,6 +61,7 @@ pub fn get_db_connection(db_path: &str) -> Result<Connection, String> {
     match conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(())) {
         Ok(_) => {
             ensure_evidence_columns(&conn)?;
+            ensure_gap_columns(&conn)?;
             Ok(conn)
         }
         Err(_) => {
@@ -81,6 +82,7 @@ pub fn get_db_connection(db_path: &str) -> Result<Connection, String> {
             conn2.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
                 .map_err(|e2| format!("Failed to verify recreated database: {}", e2))?;
             ensure_evidence_columns(&conn2)?;
+            ensure_gap_columns(&conn2)?;
             Ok(conn2)
         }
     }
@@ -210,6 +212,7 @@ pub fn init_encrypted_database(db_path: &PathBuf, key: &[u8]) -> Result<(), Stri
     ).map_err(|e| format!("Failed to create tables: {}", e))?;
 
     ensure_evidence_columns(&conn)?;
+    ensure_gap_columns(&conn)?;
     Ok(())
 }
 
@@ -258,6 +261,95 @@ fn ensure_evidence_columns(conn: &Connection) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// The fit matrix adds columns to gaps. Existing workspaces get them added here,
+/// once per open, without touching any stored decision.
+pub(crate) fn ensure_gap_columns(conn: &Connection) -> Result<(), String> {
+    let has_gaps: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'gaps'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("Failed to inspect the database schema: {}", error))?;
+    if has_gaps == 0 {
+        return Ok(());
+    }
+
+    let mut statement = conn
+        .prepare("PRAGMA table_info(gaps)")
+        .map_err(|error| format!("Failed to inspect gaps schema: {}", error))?;
+    let columns: Vec<String> = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|error| format!("Failed to read gaps columns: {}", error))?
+        .filter_map(|column| column.ok())
+        .collect();
+    drop(statement);
+
+    for (name, ddl) in [
+        (
+            "cv_focus",
+            "ALTER TABLE gaps ADD COLUMN cv_focus TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "cover_letter_point",
+            "ALTER TABLE gaps ADD COLUMN cover_letter_point TEXT NOT NULL DEFAULT ''",
+        ),
+        (
+            "story_ids",
+            "ALTER TABLE gaps ADD COLUMN story_ids TEXT NOT NULL DEFAULT ''",
+        ),
+    ] {
+        if !columns.iter().any(|column| column == name) {
+            conn.execute_batch(ddl)
+                .map_err(|error| format!("Failed to add gaps.{}: {}", name, error))?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use super::init_encrypted_database;
+
+    #[test]
+    fn initialising_the_database_twice_is_safe_and_adds_the_matrix_columns() {
+        let dir = std::env::temp_dir().join(format!("careeros-schema-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("careeros-test.db");
+        let _ = std::fs::remove_file(&path);
+
+        let key = vec![7u8; 32];
+        init_encrypted_database(&path, &key).expect("first initialisation");
+        init_encrypted_database(&path, &key).expect("second initialisation");
+
+        let conn = rusqlite::Connection::open(&path).expect("open");
+        unsafe {
+            let rc = rusqlite::ffi::sqlite3_key(conn.handle(), key.as_ptr() as *const _, key.len() as _);
+            assert_eq!(rc, rusqlite::ffi::SQLITE_OK);
+        }
+
+        let mut statement = conn.prepare("PRAGMA table_info(gaps)").expect("gaps table");
+        let columns: Vec<String> = statement
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("columns")
+            .filter_map(|column| column.ok())
+            .collect();
+        drop(statement);
+
+        for required in ["cv_focus", "cover_letter_point", "story_ids"] {
+            assert!(
+                columns.iter().any(|column| column == required),
+                "missing column {}",
+                required
+            );
+        }
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -3,12 +3,14 @@ import { invoke } from '@tauri-apps/api/core';
 import {
   AlertTriangle,
   CheckCircle2,
+  Compass,
   FileText,
   FolderOpen,
   ShieldCheck,
   XCircle,
 } from 'lucide-react';
 import Dialog from './Dialog';
+import RoleFit, { type PersistedGap } from './RoleFit';
 import { pushToast } from './Toaster';
 
 interface ApplicationDetailProps {
@@ -217,7 +219,60 @@ export default function ApplicationDetail({ result, onClose }: ApplicationDetail
   const [incidentId, setIncidentId] = useState<string | null>(null);
   const [disclosureAcked, setDisclosureAcked] = useState(false);
   const [exportingIncidents, setExportingIncidents] = useState(false);
+  const [gaps, setGaps] = useState<PersistedGap[]>([]);
+  const [approvedWording, setApprovedWording] = useState('');
+  const [savingWording, setSavingWording] = useState(false);
   const folder = folderOf(result);
+
+  const loadGaps = async () => {
+    try {
+      const rows = await invoke<PersistedGap[]>('list_gaps', {
+        applicationId: result.application_id,
+      });
+      setGaps(rows);
+    } catch {
+      // A run that failed before persisting gaps has no matrix to show.
+    }
+  };
+
+  useEffect(() => {
+    void loadGaps();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [result.application_id]);
+
+  useEffect(() => {
+    invoke<any[]>('get_application_records')
+      .then((rows) => {
+        const row = Array.isArray(rows)
+          ? rows.find((entry) => entry.id === result.application_id)
+          : null;
+        if (row) setApprovedWording(row.approved_wording || '');
+      })
+      .catch(() => {});
+  }, [result.application_id]);
+
+  const saveWording = async () => {
+    if (!approvedWording.trim()) {
+      pushToast({ kind: 'error', message: 'Approved wording cannot be empty' });
+      return;
+    }
+    setSavingWording(true);
+    try {
+      await invoke('record_approved_wording', {
+        applicationId: result.application_id,
+        wording: approvedWording.trim(),
+      });
+      pushToast({ kind: 'success', message: 'Approved wording saved for reuse' });
+    } catch (error: any) {
+      pushToast({
+        kind: 'error',
+        message: 'Could not save approved wording',
+        detail: error?.message || String(error),
+      });
+    } finally {
+      setSavingWording(false);
+    }
+  };
 
   const openFolder = async () => {
     if (!folder) return;
@@ -463,6 +518,39 @@ export default function ApplicationDetail({ result, onClose }: ApplicationDetail
             </button>
           </div>
         )}
+      </section>
+
+      <section className="mb-4 rounded-xl border border-aether-border bg-aether-surface p-4">
+        <h3 className="mb-3 flex items-center gap-2 text-row font-semibold text-aether-text">
+          <Compass size={16} className="text-aether-primary-ink" />
+          Role fit
+        </h3>
+        <RoleFit analysis={result.gap_analysis ?? null} gaps={gaps} onDecision={loadGaps} />
+      </section>
+
+      <section className="mb-4 rounded-xl border border-aether-border bg-aether-surface p-4">
+        <h3 className="mb-2 text-row font-semibold text-aether-text">Approved wording</h3>
+        <p className="mb-2 text-meta text-aether-text-muted">
+          The confirmed wording you approve for reuse on this application. It is stored on the
+          record and compared when the employer and role are checked.
+        </p>
+        <textarea
+          value={approvedWording}
+          onChange={(event) => setApprovedWording(event.target.value)}
+          rows={2}
+          placeholder="e.g. Cut reporting costs by 12% for the division"
+          className="w-full rounded border border-aether-border bg-aether-bg p-2 text-body text-aether-text"
+          aria-label="Approved wording"
+        />
+        <div className="mt-2 flex justify-end">
+          <button
+            onClick={saveWording}
+            disabled={savingWording}
+            className="rounded border border-aether-border px-3 py-1.5 text-meta text-aether-text transition hover:bg-aether-bg disabled:opacity-50"
+          >
+            {savingWording ? 'Saving…' : 'Save wording'}
+          </button>
+        </div>
       </section>
 
       <div className="grid gap-4 lg:grid-cols-2">

@@ -34,6 +34,34 @@ const COMMANDS: PaletteCommand[] = [
     takesArgument: true,
   },
   {
+    id: '/fit',
+    description: 'Role-fit matrix: strengths, gaps and keyword coverage',
+    hint: 'no arguments',
+    example: '/fit',
+    takesArgument: false,
+  },
+  {
+    id: '/questions',
+    description: 'Question bank for the latest application',
+    hint: 'no arguments',
+    example: '/questions',
+    takesArgument: false,
+  },
+  {
+    id: '/stories',
+    description: 'STAR story bank with per-theme status',
+    hint: 'no arguments',
+    example: '/stories',
+    takesArgument: false,
+  },
+  {
+    id: '/bullets',
+    description: 'Strengthen resume bullets and flag missing metrics',
+    hint: 'no arguments',
+    example: '/bullets',
+    takesArgument: false,
+  },
+  {
     id: '/mock',
     description: 'STAR-method interview simulator',
     hint: 'a role title',
@@ -95,6 +123,7 @@ interface CommandPaletteProps {
   history: PaletteEntry[];
   onHistory: (entry: PaletteEntry) => void;
   onApplyComplete?: (result: any) => void;
+  onOpenFit?: () => void;
 }
 
 export default function CommandPalette({
@@ -106,6 +135,7 @@ export default function CommandPalette({
   history,
   onHistory,
   onApplyComplete,
+  onOpenFit,
 }: CommandPaletteProps) {
   const [command, setCommand] = useState(initialCommand);
   const [selected, setSelected] = useState(0);
@@ -113,6 +143,7 @@ export default function CommandPalette({
   const [applyStates, setApplyStates] = useState<Record<string, StageState>>(initialStageStates);
   const [applyModel, setApplyModel] = useState<string | undefined>(undefined);
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [mockSession, setMockSession] = useState<{ role: string; messages: { role: string; content: string }[] } | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   const outputRef = useRef<HTMLDivElement | null>(null);
   const executingRef = useRef(false);
@@ -268,8 +299,42 @@ export default function CommandPalette({
     }
   };
 
+  const askMock = async (answer: string) => {
+    if (!mockSession) return;
+    const messages = [...mockSession.messages, { role: 'user', content: answer }];
+    onHistory({ kind: 'info', text: `You: ${answer}` });
+    try {
+      const reply: string = await invoke('start_mock_interview', {
+        role: mockSession.role,
+        applicationId: null,
+        history: messages,
+      });
+      setMockSession({
+        ...mockSession,
+        messages: [...messages, { role: 'assistant', content: reply }],
+      });
+      onHistory({ kind: 'success', text: reply });
+    } catch (error: any) {
+      onHistory({ kind: 'error', text: error?.message || String(error) });
+    }
+  };
+
   const execute = async () => {
     if (executingRef.current || running) return;
+
+    // Inside a mock interview, plain text is the candidate's answer, not a command.
+    const typedText = command.trim();
+    if (mockSession && typedText && !typedText.startsWith('/')) {
+      if (executingRef.current) return;
+      executingRef.current = true;
+      try {
+        await askMock(typedText);
+      } finally {
+        executingRef.current = false;
+        setCommand('');
+      }
+      return;
+    }
 
     const known = COMMANDS.find((item) => item.id === commandWord);
     if (!known) {
@@ -318,8 +383,69 @@ export default function CommandPalette({
         return;
       }
 
+      if (known.id === '/fit') {
+        onOpenFit?.();
+        onClose();
+        return;
+      }
+
+      if (known.id === '/questions' || known.id === '/stories') {
+        const records: any[] = await invoke('get_application_records');
+        const latest = Array.isArray(records) && records.length > 0 ? records[0] : null;
+        if (!latest) {
+          onHistory({ kind: 'error', text: 'No applications yet. Run /apply first.' });
+          return;
+        }
+        await invoke('generate_interview_prep', { applicationId: latest.id });
+        const markdown: string = await invoke('get_interview_prep_markdown', {
+          applicationId: latest.id,
+        });
+        const [questions, stories] = markdown.split('## STAR bank');
+        onHistory({
+          kind: 'success',
+          text:
+            known.id === '/questions'
+              ? questions.trim()
+              : `## STAR bank\n${(stories || '').trim()}`,
+        });
+        return;
+      }
+
+      if (known.id === '/bullets') {
+        const resume: string = await invoke('get_master_resume');
+        const bullets = resume
+          .split('\n')
+          .map((line) => line.trim())
+          .filter((line) => line.startsWith('- '))
+          .map((line) => line.slice(2).trim())
+          .filter((line) => line.length > 20)
+          .slice(0, 12);
+        if (bullets.length === 0) {
+          onHistory({ kind: 'error', text: 'No resume bullets found. Import a resume first.' });
+          return;
+        }
+        const report: any = await invoke('review_bullets', {
+          applicationId: null,
+          bullets,
+          jdText: null,
+        });
+        const lines: string[] = (report.bullets || []).map((bullet: any) => {
+          const head = `**${bullet.status === 'rewritten' ? 'Rewritten' : bullet.status === 'blocked' ? 'Blocked' : 'Needs your input'}** — ${bullet.original}`;
+          const body = bullet.rewrite ? `\n→ ${bullet.rewrite}` : `\n→ ${bullet.problem || 'no rewrite'}`;
+          const markers = bullet.markers?.length ? `\nMarkers: ${bullet.markers.join(', ')}` : '';
+          return `${head}${body}${markers}`;
+        });
+        onHistory({ kind: 'success', text: `## Bullet review\n\n${lines.join('\n\n')}` });
+        return;
+      }
+
       if (known.id === '/mock') {
-        const intro: string = await invoke('start_interview_simulator', { role: argument });
+        const intro: string = await invoke('start_mock_interview', {
+          role: argument,
+          applicationId: null,
+          history: [],
+        });
+        setMockSession({ role: argument, messages: [{ role: 'assistant', content: intro }] });
         onHistory({ kind: 'success', text: intro });
         return;
       }
@@ -448,7 +574,11 @@ export default function CommandPalette({
               setSelected(0);
             }}
             onKeyDown={handleKeyDown}
-            placeholder="Type / to see every command, e.g. /apply https://company.com/job"
+            placeholder={
+              mockSession
+                ? `Answer as the candidate for ${mockSession.role}, or type / for a command`
+                : 'Type / to see every command, e.g. /apply https://company.com/job'
+            }
             className="w-full bg-transparent font-mono text-aether-text outline-none placeholder:text-aether-text-muted/70"
             autoFocus
             aria-label="Command input"

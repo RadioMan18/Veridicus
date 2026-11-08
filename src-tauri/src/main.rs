@@ -25,6 +25,9 @@ mod orchestrator;
 mod resume_parser;
 mod ats_engine;
 mod resume_exporter;
+mod keywords;
+mod interview_prep;
+mod bullet_review;
 
 use std::sync::Mutex;
 use tauri::generate_handler;
@@ -99,6 +102,16 @@ pub fn main() {
             ollama::pull_ollama_model_progress,
             scraper::scrape_job_page,
             gap_analyzer::analyze_job_gaps,
+            gap_analyzer::analyze_jd_brief,
+            guardrails::set_gap_status,
+            guardrails::list_gaps,
+            orchestrator::get_fit_matrix,
+            interview_prep::generate_interview_prep,
+            interview_prep::get_interview_prep,
+            interview_prep::get_interview_prep_markdown,
+            interview_prep::start_mock_interview,
+            bullet_review::review_bullets,
+            bullet_review::record_approved_wording,
             skills::execute_skill,
             skills::list_skill_templates,
             skills::seed_default_skills,
@@ -123,7 +136,6 @@ pub fn main() {
             orchestrator::save_text_via_dialog,
             orchestrator::get_application_folder,
             orchestrator::run_company_research,
-            orchestrator::start_interview_simulator,
             orchestrator::draft_followups,
             orchestrator::generate_weekly_report,
             orchestrator::analyze_logs,

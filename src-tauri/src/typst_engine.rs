@@ -403,6 +403,19 @@ pub(crate) fn sidecar_command(
     Ok((executable_path, command))
 }
 
+/// Human-fill markers never belong in a rendered document.
+pub(crate) fn compile_source_problem(source: &str) -> Option<String> {
+    let markers = crate::skills::markers_in(source);
+    if markers.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Typst source still contains human-fill markers: {}",
+            markers.join(", ")
+        ))
+    }
+}
+
 /// Compile a .typ file to PDF using bundled Typst binary.
 #[tauri::command]
 pub fn compile_typst_pdf(
@@ -412,6 +425,12 @@ pub fn compile_typst_pdf(
     let input_path = Path::new(&typst_file_path);
     if !input_path.exists() {
         return Err(format!("Typst file not found: {}", typst_file_path));
+    }
+
+    let source = std::fs::read_to_string(input_path)
+        .map_err(|error| format!("Failed to read Typst source: {}", error))?;
+    if let Some(problem) = compile_source_problem(&source) {
+        return Err(problem);
     }
 
     let input_path = input_path
@@ -678,7 +697,15 @@ pub fn verify_sidecars(app: AppHandle) -> Result<Vec<String>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{markdown_to_typst, with_document_font_defaults, DOCUMENT_MARKER};
+    use super::{
+        compile_source_problem, markdown_to_typst, with_document_font_defaults, DOCUMENT_MARKER,
+    };
+
+    #[test]
+    fn compile_refuses_human_fill_markers() {
+        assert!(compile_source_problem("#set page()\n[ADD METRIC]").is_some());
+        assert!(compile_source_problem("#set page()\nCut costs by 12%").is_none());
+    }
 
     #[test]
     fn markdown_documents_use_typst_layout_and_segoe_ui_first() {

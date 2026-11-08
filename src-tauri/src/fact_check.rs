@@ -30,7 +30,7 @@ pub struct FactCheckReport {
 
 /// Result of extracting metrics from draft text.
 #[derive(Debug, Clone)]
-struct ExtractedMetric {
+pub(crate) struct ExtractedMetric {
     pub raw: String,
     pub normalized: String,
     pub qualifier: Option<String>,
@@ -108,22 +108,12 @@ pub fn run_fact_check_pass(
         }
     }
 
-    // 6. Metadata alignment: check employer name and job title appear in draft
-    let mut employer_consistency_warnings: Vec<String> = Vec::new();
-    if let Some(emp) = &employer_name {
-        if !draft_lower.contains(&emp.to_lowercase()) {
-            employer_consistency_warnings.push(format!(
-                "Employer name '{}' not found in draft", emp
-            ));
-        }
-    }
-    if let Some(title) = &job_title {
-        if !draft_lower.contains(&title.to_lowercase()) {
-            employer_consistency_warnings.push(format!(
-                "Job title '{}' not found in draft", title
-            ));
-        }
-    }
+    // 6. Metadata alignment: the draft must name the employer and the role.
+    let employer_consistency_warnings = employer_consistency_warnings(
+        &draft_md,
+        employer_name.as_deref(),
+        job_title.as_deref(),
+    );
 
     // 8. AST structural diff via comrak
     let diff_summary = compute_ast_diff(&draft_md)?;
@@ -157,8 +147,30 @@ pub fn run_fact_check_pass(
     })
 }
 
+/// The employer and role names must appear in the draft. A mismatch is advisory
+/// in the fact-check report but is reported, not swallowed.
+pub(crate) fn employer_consistency_warnings(
+    draft: &str,
+    employer: Option<&str>,
+    job_title: Option<&str>,
+) -> Vec<String> {
+    let draft_lower = draft.to_lowercase();
+    let mut warnings = Vec::new();
+    if let Some(employer) = employer {
+        if !draft_lower.contains(&employer.to_lowercase()) {
+            warnings.push(format!("Employer name '{}' not found in draft", employer));
+        }
+    }
+    if let Some(title) = job_title {
+        if !draft_lower.contains(&title.to_lowercase()) {
+            warnings.push(format!("Job title '{}' not found in draft", title));
+        }
+    }
+    warnings
+}
+
 /// Extract all metrics from draft text with qualifiers preserved.
-fn extract_metrics(text: &str) -> Vec<ExtractedMetric> {
+pub(crate) fn extract_metrics(text: &str) -> Vec<ExtractedMetric> {
     let patterns: &[(&str, &str)] = &[
         // Percentages with qualifiers
         (r"(?i)(up to|about|approximately|approx\.?|~)?\s*\d+(?:\.\d+)?\s*%", "percentage"),
@@ -352,7 +364,7 @@ pub(crate) fn verify_metrics(draft: &str, claims: &[Claim]) -> MetricVerificatio
 
 #[cfg(test)]
 mod metric_tests {
-    use super::{verify_metrics, Claim};
+    use super::{employer_consistency_warnings, verify_metrics, Claim};
 
     fn claim(wording: &str) -> Claim {
         Claim {
@@ -394,5 +406,23 @@ mod metric_tests {
     fn unsupported_number_is_unverified() {
         let report = verify_metrics("saved $4.2m", &[claim("Saved $1.2m")]);
         assert_eq!(report.unverified.len(), 1);
+    }
+
+    #[test]
+    fn a_wrong_employer_is_detected() {
+        let warnings = employer_consistency_warnings(
+            "Dear Northwind team, I am applying for the Learning Lead role.",
+            Some("Aurora"),
+            Some("Learning Lead"),
+        );
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("Aurora"));
+
+        let matched = employer_consistency_warnings(
+            "Dear Aurora team, I am applying for the Learning Lead role.",
+            Some("Aurora"),
+            Some("Learning Lead"),
+        );
+        assert!(matched.is_empty());
     }
 }

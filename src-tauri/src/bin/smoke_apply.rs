@@ -50,6 +50,8 @@ mod orchestrator;
 mod resume_parser;
 #[path = "../ats_engine.rs"]
 mod ats_engine;
+#[path = "../keywords.rs"]
+mod keywords;
 #[path = "../resume_exporter.rs"]
 mod resume_exporter;
 

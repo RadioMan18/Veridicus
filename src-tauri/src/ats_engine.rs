@@ -10,7 +10,6 @@
 //! - No headers/footers or images
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 /// ATS compliance violation types.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,6 +32,12 @@ pub struct ATSReport {
     pub violations: Vec<ATSViolation>,
     pub keyword_density: f64,
     pub keyword_matches: Vec<String>,
+    /// Posting terms the document does not cover. Same matcher as the fit matrix.
+    #[serde(default)]
+    pub missing_keywords: Vec<String>,
+    /// Every posting term with where it was found.
+    #[serde(default)]
+    pub keyword_coverage: Vec<crate::keywords::KeywordCoverage>,
     pub suggestions: Vec<String>,
 }
 
@@ -59,6 +64,16 @@ pub struct ATSRules;
 impl ATSRules {
     /// Analyze resume markdown for ATS compliance.
     pub fn analyze(markdown: &str, jd_text: Option<&str>) -> ATSReport {
+        Self::analyze_with_claims(markdown, jd_text, &[])
+    }
+
+    /// The same analysis with the ledger available, so a phrase counts as covered
+    /// when either the document or a confirmed claim contains it.
+    pub fn analyze_with_claims(
+        markdown: &str,
+        jd_text: Option<&str>,
+        claims: &[crate::claims::Claim],
+    ) -> ATSReport {
         let mut violations = Vec::new();
         let mut suggestions = Vec::new();
 
@@ -110,17 +125,34 @@ impl ATSRules {
             suggestions.push("Add phone, email, and LinkedIn at the top of the resume".to_string());
         }
 
-        // Keyword density analysis
-        let (keyword_density, keyword_matches) = if let Some(jd) = jd_text {
-            Self::extract_keywords(jd, markdown)
+        // Keyword coverage comes from the shared matcher, so this report and the
+        // fit matrix can never disagree about the same document.
+        let (keyword_coverage, missing_keywords, keyword_density) = if let Some(jd) = jd_text {
+            let coverage = crate::keywords::coverage(jd, markdown, claims);
+            let missing = crate::keywords::missing_keywords(&coverage);
+            let covered = coverage.iter().filter(|entry| entry.in_resume).count();
+            let density = if coverage.is_empty() {
+                0.0
+            } else {
+                covered as f64 / coverage.len() as f64
+            };
+            (coverage, missing, density)
         } else {
-            (0.0, Vec::new())
+            (Vec::new(), Vec::new(), 0.0)
         };
+        let keyword_matches: Vec<String> = keyword_coverage
+            .iter()
+            .filter(|entry| entry.in_resume)
+            .map(|entry| entry.term.clone())
+            .collect();
 
-        if keyword_density < 0.01 && jd_text.is_some() {
+        // Density is the share of posting phrases the resume covers. A quarter is
+        // a deliberately low bar for a real document; the previous 1% threshold
+        // was calibrated against a stuffed keyword list and meant nothing now.
+        if keyword_density < 0.25 && jd_text.is_some() && !keyword_coverage.is_empty() {
             violations.push(ATSViolation::LowKeywordDensity);
             suggestions.push(
-                "Add more job description keywords naturally throughout the resume".to_string(),
+                "Cover more posting terms where the ledger supports them".to_string(),
             );
         }
 
@@ -131,48 +163,10 @@ impl ATSRules {
             violations,
             keyword_density,
             keyword_matches,
+            missing_keywords,
+            keyword_coverage,
             suggestions,
         }
-    }
-
-    /// Extract keyword matches between JD and resume.
-    fn extract_keywords(jd: &str, resume: &str) -> (f64, Vec<String>) {
-        let jd_lower = jd.to_lowercase();
-        let jd_words: HashSet<&str> = jd_lower
-            .split_whitespace()
-            .filter(|w| w.len() >= 4)
-            .filter(|w| !Self::is_stop_word(w))
-            .collect();
-
-        let resume_lower = resume.to_lowercase();
-        let mut matches = Vec::new();
-        let mut match_count = 0;
-
-        for word in &jd_words {
-            if resume_lower.contains(word) {
-                matches.push(word.to_string());
-                match_count += 1;
-            }
-        }
-
-        let total_jd_words = jd_words.len();
-        let density = if total_jd_words > 0 {
-            match_count as f64 / total_jd_words as f64
-        } else {
-            0.0
-        };
-
-        (density, matches)
-    }
-
-    fn is_stop_word(word: &str) -> bool {
-        const STOP_WORDS: &[&str] = &[
-            "the", "and", "for", "with", "this", "that", "from", "have", "been",
-            "will", "would", "could", "should", "about", "there", "their", "what",
-            "which", "when", "where", "who", "whom", "whose", "how", "why",
-            "experience", "years", "work", "job", "role", "position",
-        ];
-        STOP_WORDS.contains(&word)
     }
 
     /// Generate ATS-safe resume markdown from claims and JD text.
@@ -359,6 +353,25 @@ mod tests {
         assert!(!output.contains("Experienced professional"));
         assert!(!output.contains("Professional experience in relevant field"));
         assert!(!output.contains("## Keywords"));
+    }
+
+    #[test]
+    fn missing_keywords_come_from_the_shared_matcher() {
+        let report = ATSRules::analyze_with_claims(
+            "Instructional design lead with a learning platform migration.",
+            Some("Instructional design and python automation for learning platform teams"),
+            &[],
+        );
+
+        assert!(report.missing_keywords.iter().any(|term| term == "python"), "missing: {:?}", report.missing_keywords);
+        assert!(!report
+            .missing_keywords
+            .iter()
+            .any(|term| term == "instructional design"));
+        assert_eq!(
+            report.keyword_matches.len() + report.missing_keywords.len(),
+            report.keyword_coverage.len()
+        );
     }
 
     #[test]
