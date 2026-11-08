@@ -99,9 +99,9 @@ struct StoryDraftResponse {
 
 /// A requirement row as the prep needs it.
 #[derive(Debug, Clone)]
-struct GapInfo {
-    id: String,
-    requirement: String,
+pub(crate) struct GapInfo {
+    pub(crate) id: String,
+    pub(crate) requirement: String,
 }
 
 fn story_text(draft: &StoryDraft) -> String {
@@ -584,7 +584,10 @@ Never invent facts, numbers, employers or outcomes. Return JSON only.";
     Ok(parsed.stories)
 }
 
-fn load_gaps(conn: &rusqlite::Connection, application_id: &str) -> Result<Vec<GapInfo>, String> {
+pub(crate) fn load_gaps(
+    conn: &rusqlite::Connection,
+    application_id: &str,
+) -> Result<Vec<GapInfo>, String> {
     let mut statement = conn
         .prepare(
             "SELECT id, requirement FROM gaps WHERE application_id = ?1 ORDER BY requirement",
@@ -623,7 +626,7 @@ fn application_dir(application_id: &str) -> Result<std::path::PathBuf, String> {
         .join(application_id))
 }
 
-fn read_posting(application_id: &str) -> String {
+pub(crate) fn read_posting(application_id: &str) -> String {
     let Ok(dir) = application_dir(application_id) else {
         return String::new();
     };
@@ -643,7 +646,7 @@ fn read_posting(application_id: &str) -> String {
 }
 
 /// Hiring goals and standout traits from the fit matrix, when it exists.
-fn matrix_signals(application_id: &str) -> (Vec<String>, Vec<String>) {
+pub(crate) fn matrix_signals(application_id: &str) -> (Vec<String>, Vec<String>) {
     let Ok(dir) = application_dir(application_id) else {
         return (Vec::new(), Vec::new());
     };
@@ -824,108 +827,14 @@ pub fn get_interview_prep_markdown(application_id: String) -> Result<String, Str
         .map_err(|_| "No interview prep has been generated for this application yet.".to_string())
 }
 
-/// Messages for a grounded mock interview.
-///
-/// The interview cannot run without confirmed claims: a role-playing model with
-/// nothing to ground on invents a candidate. History is kept verbatim (bounded)
-/// so the exchange is genuinely multi-turn.
-pub(crate) fn build_mock_messages(
-    role: &str,
-    history: &[OllamaChatMessage],
-    claims: &[Claim],
-    jd_text: &str,
-) -> Result<Vec<OllamaChatMessage>, String> {
-    if claims.is_empty() {
-        return Err(
-            "The mock interview needs confirmed claims to ground its questions. Complete Setup first."
-                .to_string(),
-        );
-    }
-
-    let mut system = format!(
-        "You are a hiring manager interviewing for the {} role using the STAR method. Ask one question at a time and wait for the answer. \
-Ground every follow-up in the confirmed claims and posting below; never invent facts about the candidate or the employer. \
-After the candidate answers, give one short piece of feedback, then ask the next question. Stop after fifteen questions.",
-        role
-    );
-    system.push_str("\n\n## Confirmed claims\n");
-    for claim in claims.iter().take(MAX_STORY_CLAIMS) {
-        system.push_str(&format!("- [{}] {}\n", claim.id, claim.confirmed_wording));
-    }
-    if !jd_text.trim().is_empty() {
-        system.push_str("\n## Posting\n");
-        system.push_str(jd_text);
-    }
-
-    let mut messages = Vec::with_capacity(history.len() + 2);
-    messages.push(OllamaChatMessage {
-        role: "system".to_string(),
-        content: system,
-    });
-    let start = history.len().saturating_sub(20);
-    messages.extend(history[start..].iter().cloned());
-    messages.push(OllamaChatMessage {
-        role: "user".to_string(),
-        content: if history.is_empty() {
-            "Begin the interview with your first question.".to_string()
-        } else {
-            "Ask the next question, based on my answer above.".to_string()
-        },
-    });
-
-    Ok(messages)
-}
-
-#[tauri::command]
-pub async fn start_mock_interview(
-    role: String,
-    application_id: Option<String>,
-    history: Option<Vec<OllamaChatMessage>>,
-    state: State<'_, AppState>,
-) -> Result<String, String> {
-    let db_path = {
-        let guard = state.db_path.lock().unwrap();
-        guard
-            .as_ref()
-            .ok_or("Database not initialized")?
-            .clone()
-    };
-    let conn = get_db_connection(&db_path)?;
-    let claims = fetch_confirmed_claims(&conn)?;
-    let jd_text = application_id
-        .as_deref()
-        .map(read_posting)
-        .unwrap_or_default();
-
-    let messages = build_mock_messages(&role, &history.unwrap_or_default(), &claims, &jd_text)?;
-    let config = crate::ollama::get_ollama_config(state.clone()).unwrap_or_default();
-    let model = config
-        .deep_model
-        .clone()
-        .or_else(|| config.fast_model.clone())
-        .unwrap_or_else(|| "llama3.2:latest".to_string());
-    let response = chat_with_ollama_async(
-        model,
-        messages,
-        Some(0.5),
-        Some(600),
-        None,
-        config.num_ctx,
-    )
-    .await?;
-
-    Ok(response.message.content)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        assemble_questions, assemble_stories, build_mock_messages, numeric_tokens,
-        sync_gap_story_ids, GapInfo, InterviewPrep, StarStory, StoryDraft, THEMES,
+        assemble_questions, assemble_stories, numeric_tokens, sync_gap_story_ids, GapInfo,
+        InterviewPrep, StarStory, StoryDraft, THEMES,
     };
     use rusqlite::Connection;
     use crate::claims::Claim;
-    use crate::ollama::OllamaChatMessage;
 
     fn claim(wording: &str) -> Claim {
         Claim {
@@ -1065,31 +974,6 @@ mod tests {
             "a different requirement must not be claimed as covered: {:?}",
             story.gap_ids
         );
-    }
-
-    #[test]
-    fn the_mock_requires_claims_and_keeps_history() {
-        assert!(build_mock_messages("Engineer", &[], &[], "").is_err());
-
-        let history = vec![
-            OllamaChatMessage {
-                role: "assistant".to_string(),
-                content: "Tell me about a time you led a project.".to_string(),
-            },
-            OllamaChatMessage {
-                role: "user".to_string(),
-                content: "I led the migration.".to_string(),
-            },
-        ];
-        let messages =
-            build_mock_messages("Engineer", &history, &[claim("Led the migration")], "")
-                .expect("grounded");
-
-        assert_eq!(messages[0].role, "system");
-        assert!(messages[0].content.contains("Led the migration"));
-        assert_eq!(messages[1].content, "Tell me about a time you led a project.");
-        assert_eq!(messages[2].content, "I led the migration.");
-        assert_eq!(messages.len(), 4);
     }
 
     #[test]

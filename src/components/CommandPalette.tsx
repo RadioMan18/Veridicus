@@ -4,6 +4,14 @@ import { listen } from '@tauri-apps/api/event';
 import { CornerDownLeft } from 'lucide-react';
 import ApplyTimeline, { initialStageStates, type StageState } from './ApplyTimeline';
 import Markdown from './Markdown';
+import MockSessionPanel, {
+  weakestTurns,
+  type MockDrillResult,
+  type MockEvaluation,
+  type MockPlan,
+  type MockSession,
+  type MockTurn,
+} from './MockInterview';
 
 export interface PaletteEntry {
   kind: 'info' | 'success' | 'error';
@@ -77,9 +85,9 @@ const COMMANDS: PaletteCommand[] = [
   },
   {
     id: '/mock',
-    description: 'STAR-method interview simulator',
-    hint: 'a role title',
-    example: '/mock Director of Training',
+    description: 'Practice interview: one question at a time, with a debrief',
+    hint: 'a role title, optionally --simulation',
+    example: '/mock Director of Training --simulation',
     takesArgument: true,
   },
   {
@@ -157,11 +165,13 @@ export default function CommandPalette({
   const [applyStates, setApplyStates] = useState<Record<string, StageState>>(initialStageStates);
   const [applyModel, setApplyModel] = useState<string | undefined>(undefined);
   const [elapsedMs, setElapsedMs] = useState(0);
-  const [mockSession, setMockSession] = useState<{ role: string; messages: { role: string; content: string }[] } | null>(null);
+  const [mockSession, setMockSession] = useState<MockSession | null>(null);
+  const [mockBusy, setMockBusy] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   const outputRef = useRef<HTMLDivElement | null>(null);
   const executingRef = useRef(false);
   const progressWarnedRef = useRef(false);
+  const mockPausedHintRef = useRef(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -212,11 +222,18 @@ export default function CommandPalette({
         onHistory({ kind: 'info', text: 'A run is in progress. Use Cancel run to stop it.' });
         return;
       }
+      if (mockSession?.status === 'asking' && !mockPausedHintRef.current) {
+        mockPausedHintRef.current = true;
+        onHistory({
+          kind: 'info',
+          text: 'Interview paused. Reopen the palette (Ctrl+K) and it resumes where you stopped.',
+        });
+      }
       onClose();
     };
     window.addEventListener('keydown', onEscape);
     return () => window.removeEventListener('keydown', onEscape);
-  }, [isOpen, running, onClose, onHistory]);
+  }, [isOpen, running, onClose, onHistory, mockSession]);
 
   useEffect(() => {
     if (!running) return;
@@ -228,7 +245,7 @@ export default function CommandPalette({
 
   useEffect(() => {
     if (outputRef.current) outputRef.current.scrollTop = outputRef.current.scrollHeight;
-  }, [history.length, applyStates]);
+  }, [history.length, applyStates, mockSession]);
 
   const ordered = useMemo(() => {
     return [...COMMANDS].sort((a, b) => {
@@ -244,7 +261,8 @@ export default function CommandPalette({
   const typed = command.trim();
   const commandWord = (typed.startsWith('/') ? typed.split(/\s+/)[0] : typed).toLowerCase();
   const argument = typed.startsWith('/') ? typed.slice(commandWord.length).trim() : '';
-  const showList = !typed.includes(' ');
+  const mockAnswering = Boolean(mockSession && mockSession.status === 'asking');
+  const showList = !mockAnswering && !typed.includes(' ');
 
   const matches = useMemo(() => {
     if (!commandWord) return ordered;
@@ -313,40 +331,365 @@ export default function CommandPalette({
     }
   };
 
-  const askMock = async (answer: string) => {
-    if (!mockSession) return;
-    const messages = [...mockSession.messages, { role: 'user', content: answer }];
-    onHistory({ kind: 'info', text: `You: ${answer}` });
+  const beginMock = async (rawArgument: string) => {
+    const simulation = /(^|\s)--(simulation|sim|real|realistic)\b/i.test(rawArgument);
+    const role = rawArgument
+      .replace(/--\S+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!role) {
+      onHistory({
+        kind: 'error',
+        text: 'Give /mock a role title. Example: /mock Director of Training',
+      });
+      return;
+    }
+
+    setMockBusy(true);
     try {
-      const reply: string = await invoke('start_mock_interview', {
-        role: mockSession.role,
+      const plan: MockPlan = await invoke('plan_mock_interview', {
+        role,
         applicationId: null,
-        history: messages,
+        mode: simulation ? 'simulation' : 'coaching',
+        questionCount: null,
       });
+      mockPausedHintRef.current = false;
       setMockSession({
-        ...mockSession,
-        messages: [...messages, { role: 'assistant', content: reply }],
+        plan,
+        transcript: [],
+        active: null,
+        startedAt: Date.now(),
+        questionStartedAt: Date.now(),
+        status: 'asking',
+        debrief: null,
+        drill: null,
       });
-      onHistory({ kind: 'success', text: reply });
+      onHistory({
+        kind: 'success',
+        text: `**Interview started — ${role}.** ${plan.contract}`,
+      });
     } catch (error: any) {
       onHistory({ kind: 'error', text: error?.message || String(error) });
+    } finally {
+      setMockBusy(false);
     }
   };
 
-  const execute = async () => {
-    if (executingRef.current || running) return;
+  const finishMock = async (plan: MockPlan, transcript: MockTurn[]) => {
+    setMockBusy(true);
+    try {
+      const report: string = await invoke('finish_mock_interview', {
+        role: plan.role,
+        mode: plan.mode,
+        turns: transcript.map((turn) => ({
+          question: turn.question,
+          group: turn.group,
+          answer: turn.answer,
+          followUpAnswer: turn.followUpAnswer,
+          skipped: turn.skipped,
+        })),
+      });
+      // The panel is the debrief while the session is open; it moves into the
+      // palette output when the session is closed, so it appears once.
+      setMockSession((previous) =>
+        previous
+          ? { ...previous, transcript, active: null, status: 'complete', debrief: report }
+          : previous,
+      );
+    } catch (error: any) {
+      setMockSession((previous) =>
+        previous ? { ...previous, transcript, active: null, status: 'complete' } : previous,
+      );
+      onHistory({
+        kind: 'error',
+        text: `The debrief could not be generated: ${error?.message || String(error)}`,
+      });
+    } finally {
+      setMockBusy(false);
+    }
+  };
 
-    // Inside a mock interview, plain text is the candidate's answer, not a command.
+  const answerMock = async (text: string) => {
+    if (!mockSession || mockSession.status !== 'asking') return;
+    const question = mockSession.plan.questions[mockSession.transcript.length];
+    if (!question) return;
+
+    const isFollowUp = Boolean(mockSession.active?.followUp);
+    const firstAnswer = mockSession.active?.answer ?? text;
+    const elapsedSeconds = Math.max(
+      1,
+      Math.round((Date.now() - mockSession.questionStartedAt) / 1000),
+    );
+
+    setMockBusy(true);
+    try {
+      const evaluation: MockEvaluation = await invoke('evaluate_mock_answer', {
+        role: mockSession.plan.role,
+        mode: mockSession.plan.mode,
+        question: question.text,
+        evidence: question.evidence,
+        answer: firstAnswer,
+        followUpAnswer: isFollowUp ? text : null,
+        elapsedSeconds,
+      });
+
+      // One probe per question: the follow-up answer is folded into the same
+      // evaluation, so a short answer never turns into an endless loop.
+      if (evaluation.follow_up && !isFollowUp) {
+        setMockSession({
+          ...mockSession,
+          active: { answer: firstAnswer, followUp: evaluation.follow_up, ack: evaluation.ack },
+        });
+        return;
+      }
+
+      const turn: MockTurn = {
+        question: question.text,
+        group: question.group,
+        answer: firstAnswer,
+        followUpQuestion: mockSession.active?.followUp ?? null,
+        followUpAnswer: isFollowUp ? text : null,
+        feedback: evaluation.feedback,
+        skipped: false,
+      };
+      const transcript = [...mockSession.transcript, turn];
+
+      if (transcript.length >= mockSession.plan.questions.length) {
+        if (mockSession.drill) {
+          finishDrillRound(mockSession, transcript);
+        } else {
+          await finishMock(mockSession.plan, transcript);
+        }
+      } else {
+        setMockSession({
+          ...mockSession,
+          transcript,
+          active: null,
+          questionStartedAt: Date.now(),
+        });
+        if (evaluation.model_note) {
+          onHistory({ kind: 'info', text: evaluation.model_note });
+        }
+      }
+    } catch (error: any) {
+      onHistory({ kind: 'error', text: error?.message || String(error) });
+    } finally {
+      setMockBusy(false);
+    }
+  };
+
+  const skipMock = async () => {
+    if (!mockSession || mockSession.status !== 'asking') return;
+    const question = mockSession.plan.questions[mockSession.transcript.length];
+    if (!question) return;
+
+    const transcript: MockTurn[] = [
+      ...mockSession.transcript,
+      {
+        question: question.text,
+        group: question.group,
+        answer: '',
+        followUpQuestion: null,
+        followUpAnswer: null,
+        feedback: null,
+        skipped: true,
+      },
+    ];
+
+    if (transcript.length >= mockSession.plan.questions.length) {
+      if (mockSession.drill) {
+        finishDrillRound(mockSession, transcript);
+        return;
+      }
+      await finishMock(mockSession.plan, transcript);
+      return;
+    }
+    setMockSession({ ...mockSession, transcript, active: null, questionStartedAt: Date.now() });
+  };
+
+  const retryMock = () => {
+    if (!mockSession || mockSession.status !== 'asking') return;
+    if (mockSession.transcript.length === 0) {
+      onHistory({ kind: 'info', text: 'Nothing to redo yet.' });
+      return;
+    }
+    setMockSession({
+      ...mockSession,
+      transcript: mockSession.transcript.slice(0, -1),
+      active: null,
+      questionStartedAt: Date.now(),
+    });
+    onHistory({ kind: 'info', text: 'Redoing the previous question.' });
+  };
+
+  const endMock = async () => {
+    if (!mockSession || mockSession.status !== 'asking') return;
+    const transcript = [...mockSession.transcript];
+
+    // An answer in progress is kept: the candidate said it, so it is scored.
+    if (mockSession.active) {
+      const question = mockSession.plan.questions[transcript.length];
+      if (question) {
+        transcript.push({
+          question: question.text,
+          group: question.group,
+          answer: mockSession.active.answer,
+          followUpQuestion: mockSession.active.followUp,
+          followUpAnswer: null,
+          feedback: null,
+          skipped: false,
+        });
+      }
+    }
+
+    if (transcript.length === 0) {
+      onHistory({
+        kind: 'info',
+        text: 'Interview ended before any answer, so there is nothing to debrief.',
+      });
+      setMockSession(null);
+      return;
+    }
+    if (mockSession.drill) {
+      finishDrillRound(mockSession, transcript);
+      return;
+    }
+    await finishMock(mockSession.plan, transcript);
+  };
+
+  /**
+   * Close a drill round by comparing each answer with the best score that
+   * question has had. A question only leaves the drill by beating itself, so the
+   * loop stops when the answers actually improve rather than after a fixed count.
+   */
+  const finishDrillRound = (session: MockSession, transcript: MockTurn[]) => {
+    if (!session.drill) return;
+    const baseline = { ...session.drill.baseline };
+    const results: MockDrillResult[] = transcript.map((turn) => {
+      const previous = baseline[turn.question] ?? 0;
+      const score = turn.feedback?.overall ?? 0;
+      return { question: turn.question, previous, score, improved: score > previous };
+    });
+    for (const result of results) {
+      baseline[result.question] = Math.max(baseline[result.question] ?? 0, result.score);
+    }
+
+    setMockSession({
+      ...session,
+      transcript,
+      active: null,
+      status: 'complete',
+      debrief: null,
+      drill: { ...session.drill, baseline, results },
+    });
+    const improved = results.filter((result) => result.improved).length;
+    onHistory({
+      kind: improved === results.length ? 'success' : 'info',
+      text: `Drill round ${session.drill.round}: ${improved} of ${results.length} answer(s) improved.`,
+    });
+  };
+
+  const startDrill = async (
+    questions: string[],
+    baseline: Record<string, number>,
+    round: number,
+    role: string,
+  ) => {
+    if (questions.length === 0) return;
+    setMockBusy(true);
+    try {
+      const plan: MockPlan = await invoke('plan_mock_drill', {
+        role,
+        applicationId: null,
+        questions,
+      });
+      mockPausedHintRef.current = false;
+      setMockSession({
+        plan,
+        transcript: [],
+        active: null,
+        startedAt: Date.now(),
+        questionStartedAt: Date.now(),
+        status: 'asking',
+        debrief: null,
+        drill: { baseline, round, results: [], role },
+      });
+      onHistory({
+        kind: 'info',
+        text: `Drill round ${round} — ${plan.questions.length} question(s), weakest first.`,
+      });
+    } catch (error: any) {
+      onHistory({ kind: 'error', text: error?.message || String(error) });
+    } finally {
+      setMockBusy(false);
+    }
+  };
+
+  const drillSession = () => {
+    if (!mockSession) return;
+    const pending = mockSession.drill
+      ? mockSession.drill.results
+          .filter((result) => !result.improved)
+          .map((result) => result.question)
+      : weakestTurns(mockSession.transcript).map((turn) => turn.question);
+    if (pending.length === 0) {
+      onHistory({ kind: 'info', text: 'There is nothing left to drill.' });
+      return;
+    }
+
+    // The next round is measured against the best score so far, including the
+    // answers just given, so it cannot pass by getting worse.
+    const baseline: Record<string, number> = { ...(mockSession.drill?.baseline ?? {}) };
+    for (const turn of mockSession.transcript) {
+      if (!turn.feedback) continue;
+      baseline[turn.question] = Math.max(baseline[turn.question] ?? 0, turn.feedback.overall);
+    }
+
+    void startDrill(
+      pending,
+      baseline,
+      (mockSession.drill?.round ?? 0) + 1,
+      mockSession.drill?.role ?? mockSession.plan.role,
+    );
+  };
+
+  const execute = async () => {
+    if (executingRef.current || running || mockBusy) return;
+
+    // During a session the input is an answer box. Only the session commands run
+    // as commands; everything else is the candidate's answer.
     const typedText = command.trim();
-    if (mockSession && typedText && !typedText.startsWith('/')) {
+    if (mockSession && mockSession.status === 'asking') {
+      if (!typedText) return;
       if (executingRef.current) return;
       executingRef.current = true;
       try {
-        await askMock(typedText);
+        if (typedText.startsWith('/')) {
+          const sessionCommand = typedText.split(/\s+/)[0].toLowerCase();
+          if (['/end', '/exit', '/stop'].includes(sessionCommand)) {
+            await endMock();
+          } else if (sessionCommand === '/skip') {
+            await skipMock();
+          } else if (sessionCommand === '/retry') {
+            retryMock();
+          } else {
+            onHistory({
+              kind: 'error',
+              text: `During an interview only /skip, /retry and /end run. "${typedText}" was not sent as an answer.`,
+            });
+          }
+        } else {
+          await answerMock(typedText);
+        }
       } finally {
         executingRef.current = false;
         setCommand('');
       }
+      return;
+    }
+
+    if (mockSession && mockSession.status === 'complete' && typedText && !typedText.startsWith('/')) {
+      onHistory({ kind: 'info', text: 'This interview is finished. Start another with /mock <role>.' });
       return;
     }
 
@@ -384,6 +727,13 @@ export default function CommandPalette({
           return;
         }
         await runApply(argument);
+        return;
+      }
+
+      if (known.id === '/mock') {
+        // Clear the input: the next Enter is the first answer, not the command.
+        setCommand('');
+        await beginMock(argument);
         return;
       }
 
@@ -465,17 +815,6 @@ export default function CommandPalette({
         return;
       }
 
-      if (known.id === '/mock') {
-        const intro: string = await invoke('start_mock_interview', {
-          role: argument,
-          applicationId: null,
-          history: [],
-        });
-        setMockSession({ role: argument, messages: [{ role: 'assistant', content: intro }] });
-        onHistory({ kind: 'success', text: intro });
-        return;
-      }
-
       if (known.id === '/followup') {
         const drafts: string = await invoke('draft_followups');
         onHistory({ kind: 'success', text: drafts });
@@ -544,6 +883,13 @@ export default function CommandPalette({
         onHistory({ kind: 'info', text: 'A run is in progress. Use Cancel run to stop it.' });
         return;
       }
+      if (mockAnswering && !mockPausedHintRef.current) {
+        mockPausedHintRef.current = true;
+        onHistory({
+          kind: 'info',
+          text: 'Interview paused. Reopen the palette (Ctrl+K) and it resumes where you stopped.',
+        });
+      }
       onClose();
       return;
     }
@@ -562,6 +908,7 @@ export default function CommandPalette({
 
     if (event.key === 'Tab') {
       event.preventDefault();
+      if (mockAnswering) return;
       if (selectedCommand) {
         setCommand(`${selectedCommand.id} `);
         setSelected(0);
@@ -571,6 +918,12 @@ export default function CommandPalette({
 
     if (event.key === 'Enter') {
       event.preventDefault();
+      // During a session Enter submits the answer. It must not be read as
+      // "complete the highlighted command" — that hijacked every typed answer.
+      if (mockAnswering) {
+        void execute();
+        return;
+      }
       if (showList && selectedCommand && selectedCommand.takesArgument && !argument) {
         setCommand(`${selectedCommand.id} `);
         setSelected(0);
@@ -601,9 +954,13 @@ export default function CommandPalette({
             }}
             onKeyDown={handleKeyDown}
             placeholder={
-              mockSession
-                ? `Answer as the candidate for ${mockSession.role}, or type / for a command`
-                : 'Type / to see every command, e.g. /apply https://company.com/job'
+              mockAnswering
+                ? mockSession?.active?.followUp
+                  ? 'Answer the follow-up, then press Enter'
+                  : `Your answer for ${mockSession?.plan.role} — Enter sends, /skip passes`
+                : mockSession?.status === 'complete'
+                  ? 'Session finished. Start another with /mock <role>'
+                  : 'Type / to see every command, e.g. /apply https://company.com/job'
             }
             className="w-full bg-transparent font-mono text-aether-text outline-none placeholder:text-aether-text-muted/70"
             autoFocus
@@ -646,7 +1003,11 @@ export default function CommandPalette({
           </div>
         )}
 
-        {!showList && (
+        {mockAnswering ? (
+          <div className="border-b border-aether-border px-4 py-2 font-mono text-xs text-aether-text-muted">
+            enter answers · /skip passes · /retry redoes · /end debriefs
+          </div>
+        ) : !showList ? (
           <div className="border-b border-aether-border px-4 py-2 font-mono text-xs text-aether-text-muted">
             {selectedCommand?.id === commandWord || !selectedCommand
               ? COMMANDS.find((item) => item.id === commandWord)?.hint
@@ -654,7 +1015,7 @@ export default function CommandPalette({
             {' · '}
             enter runs
           </div>
-        )}
+        ) : null}
 
         <div
           ref={outputRef}
@@ -695,11 +1056,45 @@ export default function CommandPalette({
               </div>
             ),
           )}
+
+          {mockSession && (
+            <MockSessionPanel
+              session={mockSession}
+              busy={mockBusy}
+              onEnd={() => {
+                void endMock();
+              }}
+              onRetry={retryMock}
+              onRestart={() => {
+                void beginMock(
+                  `${mockSession.plan.role}${
+                    mockSession.plan.mode === 'simulation' ? ' --simulation' : ''
+                  }`,
+                );
+              }}
+              onDrill={drillSession}
+              onDone={() => {
+                if (mockSession.drill && mockSession.drill.results.length > 0) {
+                  const improved = mockSession.drill.results.filter(
+                    (result) => result.improved,
+                  ).length;
+                  onHistory({
+                    kind: 'success',
+                    text: `**Drill round ${mockSession.drill.round}** — ${improved} of ${mockSession.drill.results.length} answer(s) improved.`,
+                  });
+                } else if (mockSession.debrief) {
+                  onHistory({ kind: 'success', text: mockSession.debrief });
+                }
+                setMockSession(null);
+              }}
+            />
+          )}
         </div>
 
         <div className="flex flex-wrap justify-between gap-2 border-t border-aether-border bg-aether-surface p-2 text-xs text-aether-text-muted">
           <span className="flex items-center gap-1">
-            <CornerDownLeft size={12} /> run · tab complete · ↑↓ browse
+            <CornerDownLeft size={12} />
+            {mockAnswering ? 'enter answer · /skip · /retry · /end' : 'run · tab complete · ↑↓ browse'}
           </span>
           <span>Esc closes · Ctrl+K toggles</span>
         </div>

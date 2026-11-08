@@ -78,7 +78,31 @@ Run a STAR-method interview simulator.
 /mock Senior Software Engineer
 `
 
-Starts an interactive interview with a hiring manager persona, asking behavioral questions one at a time with feedback.
+Starts a session, not a single prompt. The interviewer asks one question at a time from the grounded question bank and waits for your answer; type your answer and press Enter.
+
+**Two modes.** `/mock <role>` is coaching mode: every answer is scored on relevance, structure, specificity and impact, with one thing to fix. Add `--simulation` to withhold all feedback until the end, the way a real interview runs.
+
+`
+/mock Director of Training --simulation
+`
+
+**During a session:**
+
+`
+/skip
+` passes the current question,
+`
+/retry
+` redoes the previous one, and
+`
+/end
+` stops early and produces the debrief. Esc closes the palette and pauses the session; Ctrl+K resumes it where you stopped. A pause hint appears in the output the first time.
+
+**The debrief** lists every question with its score, what worked, the fixes worth making first, delivery facts measured from your own answers (length, hedging, STAR coverage, whether you used a number), and what to rehearse next. It is also saved in the palette output for the rest of the app session.
+
+**Drill the weak answers.** After a coaching run the debrief offers `Drill weak answers (n)`: up to three of your lowest-scoring questions, asked again, weakest first. Each round is compared with the best score that question has had, so a question leaves the drill only once you beat it; `Drill again` asks only the ones still behind. A three-question drill takes a couple of minutes and is the fastest way to move one specific answer. Drills need the per-answer scores a coaching run produces, so they are offered from a coaching run rather than a simulation.
+
+The interview cannot start without confirmed claims: questions and coaching are grounded in the ledger, so the tool will not invent experience for you.
 
 ### 5. Follow Up on Applications
 Draft follow-up emails for stale applications.

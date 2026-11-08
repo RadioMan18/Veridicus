@@ -27,6 +27,7 @@ mod ats_engine;
 mod resume_exporter;
 mod keywords;
 mod interview_prep;
+mod mock_interview;
 mod bullet_review;
 mod recruiter_review;
 mod pack;
@@ -111,7 +112,10 @@ pub fn main() {
             interview_prep::generate_interview_prep,
             interview_prep::get_interview_prep,
             interview_prep::get_interview_prep_markdown,
-            interview_prep::start_mock_interview,
+            mock_interview::plan_mock_interview,
+            mock_interview::plan_mock_drill,
+            mock_interview::evaluate_mock_answer,
+            mock_interview::finish_mock_interview,
             bullet_review::review_bullets,
             bullet_review::record_approved_wording,
             recruiter_review::generate_recruiter_review,
