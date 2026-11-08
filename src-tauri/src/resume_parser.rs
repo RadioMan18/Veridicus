@@ -67,27 +67,40 @@ pub fn parse_pdf_text(path: &str, app: &AppHandle) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Extract text from XML content inside a DOCX/ODT zip archive.
-/// Uses regex to extract text from w:t / text:p tags.
-fn extract_text_from_xml(xml: &str) -> String {
-    let mut text = String::new();
+/// Extract plain text from XML content inside a DOCX/ODT zip archive.
+///
+/// Paragraph ends become newlines and every other tag is dropped. Capturing
+/// `<w:t>` runs with a loose regex is not enough: a bare `w:t` prefix also
+/// matches `<w:tblPr>`, `<w:tblGrid>`, `<w:tc>` and friends, which dragged raw
+/// WordprocessingML into imported resumes and from there into the claims ledger.
+pub fn extract_text_from_xml(xml: &str) -> String {
+    let paragraph_end = regex::Regex::new(r"</(?:w:p|text:p|text:h)>").unwrap();
+    let tag = regex::Regex::new(r"<[^>]*>").unwrap();
 
-    // Extract all w:t (Word text) or text:p (ODT paragraph) content
-    let re = regex::Regex::new(r"<(?:w:t|text:p)[^>]*>(.*?)</(?:w:t|text:p)>").unwrap();
-    for cap in re.captures_iter(xml) {
-        let content = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        // Decode basic XML entities
-        let decoded = content
-            .replace("&lt;", "<")
-            .replace("&gt;", ">")
-            .replace("&amp;", "&")
-            .replace("&quot;", "\"")
-            .replace("&apos;", "'");
-        text.push_str(&decoded);
-        text.push(' ');
+    let mut text = String::new();
+    for paragraph in paragraph_end.split(xml) {
+        let stripped = tag.replace_all(paragraph, " ");
+        let line = decode_entities(&stripped)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if line.is_empty() {
+            continue;
+        }
+        text.push_str(&line);
+        text.push('\n');
     }
 
     text.trim().to_string()
+}
+
+/// Decode the XML entities that appear in document text.
+fn decode_entities(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
 }
 
 /// Extract text from a DOCX file using zip + regex.
@@ -190,5 +203,24 @@ mod tests {
         let text = extract_text_from_xml(xml);
         assert!(text.contains("Hello"));
         assert!(text.contains("World"));
+    }
+
+    #[test]
+    fn table_markup_never_reaches_the_text() {
+        let xml = r#"<w:document><w:body><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>Hello</w:t></w:r></w:p><w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="10800"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>Cell text</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>"#;
+        let text = extract_text_from_xml(xml);
+        assert!(text.contains("Hello"));
+        assert!(text.contains("Cell text"));
+        assert!(!text.contains("w:tblPr"));
+        assert!(!text.contains("w:gridCol"));
+        assert!(!text.contains('<'), "markup leaked: {text}");
+    }
+
+    #[test]
+    fn odt_paragraphs_keep_their_line_breaks() {
+        let xml = r#"<office:body><text:p>Alpha <text:span>beta</text:span></text:p><text:p>Gamma &amp; delta</text:p></office:body>"#;
+        let text = extract_text_from_xml(xml);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines, vec!["Alpha beta", "Gamma & delta"]);
     }
 }

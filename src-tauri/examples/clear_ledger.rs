@@ -22,16 +22,23 @@ fn main() {
     let workspace: PathBuf = dirs::document_dir().unwrap().join("CareerOS");
     let args: Vec<String> = env::args().skip(1).collect();
 
-    if args.first().map(|s| s.as_str()) == Some("delete") {
-        let date = args.get(1).expect("delete needs YYYY-MM-DD").clone();
-        let ids: Vec<String> = {
+    let deleting_by_id = args.first().map(|s| s.as_str()) == Some("delete-id");
+    if args.first().map(|s| s.as_str()) == Some("delete") || deleting_by_id {
+        let selector = if deleting_by_id {
+            args.get(1).expect("delete-id needs a uuid").clone()
+        } else {
+            args.get(1).expect("delete needs YYYY-MM-DD").clone()
+        };
+        let ids: Vec<String> = if deleting_by_id {
+            vec![selector.clone()]
+        } else {
             let mut stmt = conn
                 .prepare("SELECT id FROM application_records WHERE date = ?1")
                 .unwrap();
-            let rows = stmt.query_map([&date], |r| r.get::<_, String>(0)).unwrap();
+            let rows = stmt.query_map([&selector], |r| r.get::<_, String>(0)).unwrap();
             rows.filter_map(|r| r.ok()).collect()
         };
-        println!("deleting {} record(s) dated {}", ids.len(), date);
+        println!("deleting {} record(s) for {}", ids.len(), selector);
         for id in &ids {
             conn.execute("DELETE FROM gaps WHERE application_id = ?1", [id]).ok();
             conn.execute("DELETE FROM application_records WHERE id = ?1", [id]).unwrap();

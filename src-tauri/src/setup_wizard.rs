@@ -517,6 +517,125 @@ pub fn parse_claims_from_resume(resume: &str) -> Vec<ClaimSuggestion> {
     suggestions
 }
 
+/// Summary of a ledger rebuild from the master resume.
+pub struct LedgerRebuild {
+    pub removed: usize,
+    pub inserted: usize,
+    pub master_cleaned: bool,
+    pub master_chars: usize,
+    pub suggestions: usize,
+}
+
+/// Rebuild the claims ledger from the master resume.
+///
+/// Documents imported before the parser was fixed reached the ledger with
+/// WordprocessingML still in them, which made every claim unusable as evidence.
+/// This drops those rows, repairs the stored master text if it still carries
+/// markup, and re-derives claims from it. Repaired claims are recorded with
+/// `verified_by = 'ledger-repair'` so the provenance of the confirmation is
+/// explicit rather than attributed to the user.
+pub fn rebuild_claims_from_master(
+    conn: &rusqlite::Connection,
+    master_path: Option<&std::path::Path>,
+) -> Result<LedgerRebuild, String> {
+    let stored: String = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'master_resume'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("No master resume recorded: {}", error))?;
+
+    let mut master_cleaned = stored.contains("<w:") || stored.contains("</w:");
+    let mut resume = if master_cleaned {
+        crate::resume_parser::extract_text_from_xml(&stored)
+    } else {
+        stored
+    };
+    // The parsed master resume on disk is the canonical copy; prefer it when the
+    // database copy is missing or shorter.
+    if let Some(path) = master_path {
+        if let Ok(from_disk) = std::fs::read_to_string(path) {
+            if from_disk.trim().len() > resume.trim().len() {
+                master_cleaned = from_disk.contains("<w:") || from_disk.contains("</w:");
+                resume = if master_cleaned {
+                    crate::resume_parser::extract_text_from_xml(&from_disk)
+                } else {
+                    from_disk
+                };
+            }
+        }
+    }
+    if resume.trim().is_empty() {
+        return Err("Master resume contains no readable text".to_string());
+    }
+
+    // Store the repaired text back so the importer never serves markup again.
+    conn.execute(
+        "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('master_resume', ?1)",
+        [resume.as_str()],
+    )
+    .map_err(|error| format!("Failed to store cleaned master resume: {}", error))?;
+    if let Some(path) = master_path {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("Failed to create master directory: {}", error))?;
+        }
+        std::fs::write(path, &resume)
+            .map_err(|error| format!("Failed to write master resume: {}", error))?;
+    }
+
+    // The ledger is derived from the master resume, so a rebuild replaces it.
+    let removed = conn
+        .execute("DELETE FROM claims", [])
+        .map_err(|error| format!("Failed to clear claims: {}", error))?;
+
+    let now = Utc::now().to_rfc3339();
+    let suggestions = parse_claims_from_resume(&resume);
+    let mut inserted = 0;
+    for suggestion in &suggestions {
+        let id = Uuid::new_v4().to_string();
+        let evidence_type = crate::claims::normalized_evidence_type(&suggestion.evidence_type);
+        let evidence_sha256 = crate::claims::claim_evidence_sha256(
+            &suggestion.statement,
+            &suggestion.evidence_source,
+            &evidence_type,
+            &suggestion.scope,
+            &suggestion.category,
+        );
+        let written = conn
+            .execute(
+                "INSERT INTO claims (id, statement, evidence_source, confirmed_wording, scope, category, status, last_confirmed_at, evidence_type, evidence_sha256, verified_by)
+                 SELECT ?1, ?2, ?3, ?4, ?5, ?6, 'confirmed', ?7, ?8, ?9, 'ledger-repair'
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM claims
+                     WHERE statement = ?2 AND scope = ?5 AND category = ?6
+                 )",
+                rusqlite::params![
+                    id,
+                    suggestion.statement,
+                    suggestion.evidence_source,
+                    suggestion.confirmed_wording,
+                    suggestion.scope,
+                    suggestion.category,
+                    now,
+                    evidence_type,
+                    evidence_sha256,
+                ],
+            )
+            .map_err(|error| format!("Failed to save repaired claim: {}", error))?;
+        inserted += written;
+    }
+
+    Ok(LedgerRebuild {
+        removed,
+        inserted,
+        master_cleaned,
+        master_chars: resume.chars().count(),
+        suggestions: suggestions.len(),
+    })
+}
+
 pub fn update_setup_step(conn: &rusqlite::Connection, step_id: &str) -> Result<(), String> {
     conn.execute(
         "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, 'true')",

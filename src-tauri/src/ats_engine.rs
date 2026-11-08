@@ -100,8 +100,9 @@ impl ATSRules {
             suggestions.push("Remove page numbers and headers/footers".to_string());
         }
 
-        // Check contact info at top
-        let first_500 = &lower[..lower.len().min(500)];
+        // Check contact info at top. Truncate on a char boundary: byte slicing a
+        // lowercased string can split a multi-byte character and panic.
+        let first_500 = prefix_bytes(&lower, 500);
         let has_email = first_500.contains("@");
         let has_phone = first_500.chars().filter(|c| c.is_ascii_digit()).count() >= 7;
         if !has_email || !has_phone {
@@ -180,6 +181,10 @@ impl ATSRules {
         jd_text: Option<&str>,
         contact_info: Option<&ContactInfo>,
     ) -> String {
+        // `jd_text` stays in the signature for its callers, but nothing is
+        // injected from it: a keyword block is stuffing, not evidence. Matching
+        // posting keywords is Stage 6b.
+        let _ = jd_text;
         let mut md = String::new();
 
         // Contact info at top
@@ -208,54 +213,45 @@ impl ATSRules {
             md.push_str("\n---\n\n");
         }
 
-        // Summary section
-        md.push_str("## Summary\n\n");
+        // Every section is built only from the ledger. A section with no claims is
+        // omitted rather than padded with an unverifiable stock line.
         let summary_claims: Vec<_> = claims
             .iter()
             .filter(|c| c.category == "tenure" || c.category == "title")
             .collect();
         if !summary_claims.is_empty() {
+            md.push_str("## Summary\n\n");
             for claim in summary_claims.iter().take(3) {
                 md.push_str(&format!("- {}\n", claim.confirmed_wording));
             }
-        } else {
-            md.push_str("- Experienced professional with proven track record\n");
+            md.push_str("\n");
         }
-        md.push_str("\n");
 
         // Experience section (reverse chronological)
-        md.push_str("## Experience\n\n");
         let exp_claims: Vec<_> = claims
             .iter()
             .filter(|c| c.category == "project" || c.category == "tool")
             .collect();
         if !exp_claims.is_empty() {
+            md.push_str("## Experience\n\n");
             for claim in exp_claims.iter() {
                 md.push_str(&format!("- {}\n", claim.confirmed_wording));
             }
-        } else {
-            md.push_str("- Professional experience in relevant field\n");
+            md.push_str("\n");
         }
-        md.push_str("\n");
 
         // Skills section
-        md.push_str("## Skills\n\n");
         let skill_claims: Vec<_> = claims
             .iter()
             .filter(|c| c.category == "cert" || c.category == "tool")
             .collect();
         if !skill_claims.is_empty() {
+            md.push_str("## Skills\n\n");
             for claim in skill_claims.iter() {
                 md.push_str(&format!("- {}\n", claim.confirmed_wording));
             }
-        } else {
-            md.push_str("- Professional skills relevant to target role\n");
+            md.push_str("\n");
         }
-        md.push_str("\n");
-
-        // Education section
-        md.push_str("## Education\n\n");
-        md.push_str("- Degree in relevant field\n\n");
 
         // Certifications section
         let cert_claims: Vec<_> = claims.iter().filter(|c| c.category == "cert").collect();
@@ -267,35 +263,22 @@ impl ATSRules {
             md.push_str("\n");
         }
 
-        // Inject JD keywords naturally
-        if let Some(jd) = jd_text {
-            let keywords = Self::extract_jd_keywords(jd);
-            if !keywords.is_empty() {
-                md.push_str("## Keywords\n\n");
-                for kw in keywords.iter().take(10) {
-                    md.push_str(&format!("- {}\n", kw));
-                }
-                md.push_str("\n");
-            }
-        }
-
+        // No education section and no keyword block: the ledger carries no degree
+        // claim, and a `## Keywords` list is literal stuffing rather than content.
         md
     }
+}
 
-    /// Extract relevant keywords from JD for natural injection.
-    fn extract_jd_keywords(jd: &str) -> Vec<String> {
-        let jd_lower = jd.to_lowercase();
-        let words: HashSet<&str> = jd_lower
-            .split_whitespace()
-            .filter(|w| w.len() >= 4)
-            .filter(|w| !Self::is_stop_word(w))
-            .collect();
-
-        let mut keywords: Vec<&str> = words.into_iter().collect();
-        keywords.sort();
-        keywords.truncate(15);
-        keywords.iter().map(|s| s.to_string()).collect()
+/// Borrow the first `max` bytes of `text` without splitting a character.
+fn prefix_bytes(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
     }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// Contact information for resume header.
@@ -315,5 +298,72 @@ impl Default for ContactInfo {
             email: None,
             linkedin: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ATSRules, ATSViolation};
+    use crate::claims::Claim;
+
+    fn claim(category: &str, wording: &str) -> Claim {
+        Claim {
+            id: "11111111-1111-4111-8111-111111111111".to_string(),
+            statement: wording.to_string(),
+            evidence_source: "master/resume.md".to_string(),
+            confirmed_wording: wording.to_string(),
+            scope: "as stated".to_string(),
+            category: category.to_string(),
+            status: "confirmed".to_string(),
+            last_confirmed_at: "2026-11-07".to_string(),
+            evidence_type: "unspecified".to_string(),
+            evidence_sha256: String::new(),
+            verified_by: "ledger-repair".to_string(),
+        }
+    }
+
+    #[test]
+    fn non_ascii_text_straddling_the_contact_boundary_does_not_panic() {
+        // 300 two-byte characters push byte 500 into the middle of a character,
+        // which is exactly where the old `&lower[..500]` slice panicked.
+        let resume = format!(
+            "Candidate Name\ncandidate@example.com\n555-123-4567\n{}",
+            "é".repeat(300)
+        );
+        assert!(resume.len() > 500);
+        let report = ATSRules::analyze(&resume, None);
+        assert!(
+            !report
+                .violations
+                .iter()
+                .any(|violation| matches!(violation, ATSViolation::MissingContactInfo)),
+            "contact details sit in the first bytes and must still be found"
+        );
+    }
+
+    #[test]
+    fn generated_resume_contains_no_fabricated_content() {
+        let claims = vec![
+            claim("tenure", "18+ years in enterprise healthcare IT"),
+            claim("project", "Cut planning time from 8 hours to 30 minutes"),
+        ];
+        let output = ATSRules::generate_ats_resume(
+            &claims,
+            Some("learning and development python instructional design"),
+            None,
+        );
+
+        assert!(output.contains("18+ years in enterprise healthcare IT"));
+        assert!(output.contains("Cut planning time from 8 hours to 30 minutes"));
+        assert!(!output.contains("Degree in relevant field"));
+        assert!(!output.contains("Experienced professional"));
+        assert!(!output.contains("Professional experience in relevant field"));
+        assert!(!output.contains("## Keywords"));
+    }
+
+    #[test]
+    fn empty_ledger_produces_no_padded_sections() {
+        let output = ATSRules::generate_ats_resume(&[], None, None);
+        assert!(output.trim().is_empty());
     }
 }

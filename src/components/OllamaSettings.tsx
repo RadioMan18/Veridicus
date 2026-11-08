@@ -21,6 +21,7 @@ export default function OllamaSettings({ isOpen, onClose }: OllamaSettingsProps)
   const [statusKind, setStatusKind] = useState<'ok' | 'error' | 'info'>('info');
   const [fast, setFast] = useState('');
   const [deep, setDeep] = useState('');
+  const [numCtx, setNumCtx] = useState('24576');
   const [newModel, setNewModel] = useState('');
 
   const loadModels = async () => {
@@ -37,6 +38,7 @@ export default function OllamaSettings({ isOpen, onClose }: OllamaSettingsProps)
         const config: any = await invoke('get_ollama_config');
         if (config.fast_model) setFast(config.fast_model);
         if (config.deep_model) setDeep(config.deep_model);
+        if (config.num_ctx) setNumCtx(String(config.num_ctx));
       } catch {
         // Model roles are optional until the user picks them.
       }
@@ -58,7 +60,11 @@ export default function OllamaSettings({ isOpen, onClose }: OllamaSettingsProps)
     setStatus('Saving configuration…');
     setStatusKind('info');
     try {
-      await invoke('save_ollama_config', { fastModel: fast || null, deepModel: deep || null });
+      await invoke('save_ollama_config', {
+        fastModel: fast || null,
+        deepModel: deep || null,
+        numCtx: numCtx.trim() ? Number(numCtx) : null,
+      });
       setStatus('Configuration saved');
       setStatusKind('ok');
       pushToast({ kind: 'success', message: 'Model roles saved' });
@@ -189,6 +195,21 @@ export default function OllamaSettings({ isOpen, onClose }: OllamaSettingsProps)
                   </option>
                 ))}
               </select>
+            </label>
+
+            <label className="block text-body text-aether-text">
+              Context window (tokens)
+              <span className="ml-2 text-meta text-aether-text-muted">
+                the full /apply prompt needs about 20k; lower values drop its tail
+              </span>
+              <input
+                type="number"
+                min={2048}
+                step={1024}
+                value={numCtx}
+                onChange={(event) => setNumCtx(event.target.value)}
+                className="mt-1 w-full rounded border border-aether-border bg-aether-bg p-2 font-mono text-body text-aether-text"
+              />
             </label>
           </div>
         </section>

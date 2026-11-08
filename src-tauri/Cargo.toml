@@ -8,6 +8,13 @@ edition = "2021"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# Live smoke harness (campaign stage 0.9). Off by default so normal builds skip it.
+smoke-harness = []
+
+[[bin]]
+name = "smoke_apply"
+path = "src/bin/smoke_apply.rs"
+required-features = ["smoke-harness"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

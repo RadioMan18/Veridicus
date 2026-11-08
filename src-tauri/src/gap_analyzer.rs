@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 use crate::AppState;
 use crate::db::get_db_connection;
-use crate::ollama::{chat_with_ollama, OllamaChatMessage};
+use crate::ollama::{chat_with_ollama_async, OllamaChatMessage};
 
 /// Represents the tier of a job requirement.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -71,7 +71,11 @@ fn parse_tier(tier_str: &str) -> RequirementTier {
 /// Format tier for serialization.
 
 /// Extract requirements from job description text using the Ollama fast model.
-fn extract_requirements_with_llm(jd_text: &str, fast_model: &str) -> Result<Vec<LlmRequirementItem>, String> {
+async fn extract_requirements_with_llm(
+    jd_text: &str,
+    fast_model: &str,
+    num_ctx: Option<u32>,
+) -> Result<Vec<LlmRequirementItem>, String> {
     let system = "You are a job description analyzer. Extract all requirements from the job description below. For each requirement, assign a tier: must_have (critical, must have to be considered), nice_to_have (preferred but not deal-breaker), or gate (cannot proceed without). Output as JSON with a requirements array, each item having: description (the requirement text), tier (must_have|nice_to_have|gate), and optional rationale.";
 
     let user_prompt = format!("Extract requirements from this job description:\n\n{}", jd_text);
@@ -87,13 +91,16 @@ fn extract_requirements_with_llm(jd_text: &str, fast_model: &str) -> Result<Vec<
         },
     ];
 
-    let response = chat_with_ollama(
+    let response = chat_with_ollama_async(
         fast_model.to_string(),
         messages,
         Some(0.3),
         Some(800),
         None,
-    ).map_err(|e| format!("LLM chat failed: {}", e))?;
+        num_ctx,
+    )
+    .await
+    .map_err(|e| format!("LLM chat failed: {}", e))?;
 
     let content = response.message.content;
 
@@ -178,15 +185,17 @@ pub async fn analyze_job_gaps(
     };
 
     // 2. Get Ollama config for fast model assignment
-    let ollama_config = crate::ollama::get_ollama_config(state);
-    let fast_model = ollama_config.unwrap_or_default().fast_model
+    let ollama_config = crate::ollama::get_ollama_config(state).unwrap_or_default();
+    let fast_model = ollama_config.fast_model
+        .clone()
         .unwrap_or_else(|| "llama3.2:3b".to_string());
 
     // 3. Extract requirements from JD using LLM
-    let llm_requirements = extract_requirements_with_llm(&jd_text, &fast_model)
-        .unwrap_or_else(|_| {
-            extract_requirements_fallback(&jd_text)
-        });
+    let llm_requirements =
+        match extract_requirements_with_llm(&jd_text, &fast_model, ollama_config.num_ctx).await {
+        Ok(requirements) => requirements,
+        Err(_) => extract_requirements_fallback(&jd_text),
+    };
 
     // 4. Analyze each requirement against the claims ledger
     let mut supported_claim_ids: Vec<String> = Vec::new();

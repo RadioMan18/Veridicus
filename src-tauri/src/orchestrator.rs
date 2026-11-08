@@ -586,8 +586,11 @@ pub async fn execute_apply_workflow(
         .map(|g| g.supported_claim_ids.clone())
         .unwrap_or_default();
 
-    let never_claim_subjects = |kind: &str| -> Vec<String> {
-        crate::guardrails::load_active_rules(&conn, kind)
+    // A local fn, not a closure: a closure would capture `conn`, and a `Connection`
+    // is not `Sync`, which would make this workflow future non-`Send` across the
+    // advisory model call below.
+    fn never_claim_subjects(conn: &rusqlite::Connection, kind: &str) -> Vec<String> {
+        crate::guardrails::load_active_rules(conn, kind)
             .map(|rules| {
                 rules
                     .into_iter()
@@ -596,9 +599,9 @@ pub async fn execute_apply_workflow(
                     .collect()
             })
             .unwrap_or_default()
-    };
-    let resume_never_claims = never_claim_subjects(crate::guardrails::RESUME);
-    let letter_never_claims = never_claim_subjects(crate::guardrails::COVER_LETTER);
+    }
+    let resume_never_claims = never_claim_subjects(&conn, crate::guardrails::RESUME);
+    let letter_never_claims = never_claim_subjects(&conn, crate::guardrails::COVER_LETTER);
 
     if let Some(resume_md) = result.resume_tailored.as_ref().map(|r| r.markdown_output.clone()) {
         match crate::fact_check::run_fact_check_pass(
@@ -687,9 +690,11 @@ pub async fn execute_apply_workflow(
             // Advisory model pass: looks for scope inflation the lexicon misses.
             // It never blocks, and every observation must cite a real claim and
             // quote a sentence that actually appears in the document.
-            let scope_model = crate::ollama::get_ollama_config(state.clone())
-                .ok()
-                .and_then(|config| config.fast_model.or(config.deep_model))
+            let scope_config = crate::ollama::get_ollama_config(state.clone()).unwrap_or_default();
+            let scope_model = scope_config
+                .fast_model
+                .clone()
+                .or_else(|| scope_config.deep_model.clone())
                 .unwrap_or_else(|| "llama3.2:latest".to_string());
             let mut advisory = crate::guardrails::GuardrailReport::default();
             let mut review_error: Option<String> = None;
@@ -705,7 +710,9 @@ pub async fn execute_apply_workflow(
             ] {
                 let Some(draft) = draft else { continue };
                 let _ = kind;
-                let outcome = crate::scope_review::review(draft, &claims, &scope_model);
+                let outcome =
+                    crate::scope_review::review(draft, &claims, &scope_model, scope_config.num_ctx)
+                        .await;
                 if let Some(error) = outcome.error {
                     review_error.get_or_insert(error);
                     continue;
@@ -753,6 +760,26 @@ pub async fn execute_apply_workflow(
                 report.findings.push(crate::guardrails::GuardrailFinding {
                     code: "untrusted_input_instruction".to_string(),
                     message: warning.clone(),
+                    blocking: false,
+                });
+            }
+            let posting_truncated = result
+                .resume_tailored
+                .as_ref()
+                .map(|skill| skill.jd_truncated)
+                .unwrap_or(false)
+                || result
+                    .cover_letter
+                    .as_ref()
+                    .map(|skill| skill.jd_truncated)
+                    .unwrap_or(false);
+            if posting_truncated {
+                report.findings.push(crate::guardrails::GuardrailFinding {
+                    code: "posting_truncated".to_string(),
+                    message: format!(
+                        "the posting exceeded the {} byte prompt budget; its tail was omitted from generation",
+                        crate::skills::MAX_JD_PROMPT_BYTES
+                    ),
                     blocking: false,
                 });
             }
@@ -1069,13 +1096,16 @@ pub async fn run_company_research(company: String, state: State<'_, AppState>) -
         },
     ];
 
-    let response = crate::ollama::chat_with_ollama(
+    let response = crate::ollama::chat_with_ollama_async(
         model,
         messages,
         Some(0.3),
         Some(1000),
         None,
-    ).map_err(|e| format!("Company research failed: {}", e))?;
+        config.num_ctx,
+    )
+    .await
+    .map_err(|e| format!("Company research failed: {}", e))?;
 
     Ok(response.message.content)
 }
@@ -1103,13 +1133,16 @@ pub async fn start_interview_simulator(role: String, state: State<'_, AppState>)
         },
     ];
 
-    let response = crate::ollama::chat_with_ollama(
+    let response = crate::ollama::chat_with_ollama_async(
         model,
         messages,
         Some(0.5),
         Some(800),
         None,
-    ).map_err(|e| format!("Interview simulator failed: {}", e))?;
+        config.num_ctx,
+    )
+    .await
+    .map_err(|e| format!("Interview simulator failed: {}", e))?;
 
     Ok(response.message.content)
 }
@@ -1126,18 +1159,23 @@ pub async fn draft_followups(state: State<'_, AppState>) -> Result<String, Strin
     let conn = get_db_connection(&db_path_str)?;
 
     // Get applications that are SUBMITTED or INTERVIEWING without recent follow-up
-    let mut stmt = conn.prepare("SELECT id, employer, role, date FROM application_records WHERE status IN ('SUBMITTED', 'INTERVIEWING')")
-        .map_err(|e| format!("Failed to prepare query: {}", e))?;
-    let apps: Vec<(String, String, String, String)> = stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, String>(3)?,
-        ))
-    }).map_err(|e| format!("Failed to query apps: {}", e))?
-    .filter_map(|r| r.ok())
-    .collect();
+    let apps: Vec<(String, String, String, String)> = {
+        // Scoped so the statement is dropped before the model calls below: a
+        // `Statement` cannot be held across an await in an async command.
+        let mut stmt = conn.prepare("SELECT id, employer, role, date FROM application_records WHERE status IN ('SUBMITTED', 'INTERVIEWING')")
+            .map_err(|e| format!("Failed to prepare query: {}", e))?;
+        let rows: Vec<(String, String, String, String)> = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        }).map_err(|e| format!("Failed to query apps: {}", e))?
+        .filter_map(|r| r.ok())
+        .collect();
+        rows
+    };
 
     if apps.is_empty() {
         return Ok("No applications awaiting follow-up. Mark an application as SUBMITTED or INTERVIEWING in the ledger first.".to_string());
@@ -1167,7 +1205,16 @@ pub async fn draft_followups(state: State<'_, AppState>) -> Result<String, Strin
             },
         ];
 
-        match crate::ollama::chat_with_ollama(model.clone(), messages, Some(0.4), Some(400), None) {
+        match crate::ollama::chat_with_ollama_async(
+            model.clone(),
+            messages,
+            Some(0.4),
+            Some(400),
+            None,
+            config.num_ctx,
+        )
+        .await
+        {
             Ok(response) => {
                 drafts.push_str(&format!(
                     "### {} - {}\n_Applied {}_\n\n{}\n\n",

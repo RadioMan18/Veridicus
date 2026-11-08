@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::claims::Claim;
 use crate::guardrails::GuardrailFinding;
-use crate::ollama::{chat_with_ollama, OllamaChatMessage};
+use crate::ollama::{chat_with_ollama_async, OllamaChatMessage};
 
 const MAX_FINDINGS: usize = 5;
 const MAX_CLAIMS_IN_PROMPT: usize = 25;
@@ -150,7 +150,12 @@ pub fn advisory_findings(observations: &[ScopeObservation]) -> Vec<GuardrailFind
 }
 
 /// Run the advisory pass. Returns an error string when the model could not be used.
-pub fn review(draft: &str, claims: &[Claim], model: &str) -> ScopeReviewOutcome {
+pub async fn review(
+    draft: &str,
+    claims: &[Claim],
+    model: &str,
+    num_ctx: Option<u32>,
+) -> ScopeReviewOutcome {
     let used = claims_in_draft(draft, claims);
     if used.is_empty() {
         return ScopeReviewOutcome::default();
@@ -181,13 +186,16 @@ pub fn review(draft: &str, claims: &[Claim], model: &str) -> ScopeReviewOutcome 
         },
     ];
 
-    match chat_with_ollama(
+    match chat_with_ollama_async(
         model.to_string(),
         messages,
         Some(0.0),
         Some(700),
         Some("json".to_string()),
-    ) {
+        num_ctx,
+    )
+    .await
+    {
         Ok(response) => ScopeReviewOutcome {
             findings: parse_observations(&response.message.content, claims, draft),
             ran: true,

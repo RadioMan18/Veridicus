@@ -562,17 +562,20 @@ pub fn persist_gaps(
     for gap in &analysis.identified_gaps {
         let id = uuid::Uuid::new_v4().to_string();
         let tier = tier_name(&gap.requirement_tier);
+        // A gap by definition has no matching claim, so this must bind NULL.
+        // An empty string is not NULL and violates the `REFERENCES claims(id)`
+        // foreign key, which aborted every /apply that found a gap.
         conn.execute(
             "INSERT INTO gaps (id, application_id, requirement, requirement_tier, matched_claim_id, adjacent_strength, letter_line, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open')",
-            [
-                id.as_str(),
+            rusqlite::params![
+                id,
                 application_id,
-                gap.requirement.as_str(),
+                gap.requirement,
                 tier,
-                gap.matched_claim_id.as_deref().unwrap_or(""),
-                gap.adjacent_strength.as_str(),
-                gap.proposed_letter_line.as_str(),
+                gap.matched_claim_id,
+                gap.adjacent_strength,
+                gap.proposed_letter_line,
             ],
         )
         .map_err(|error| format!("Failed to persist gap: {}", error))?;

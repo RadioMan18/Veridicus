@@ -3,6 +3,7 @@
 //! Communicates with the local Ollama daemon at http://localhost:11434
 //! for model discovery, pull, and text generation (chat/generate endpoints).
 
+use std::sync::OnceLock;
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use reqwest::blocking::Client;
@@ -10,6 +11,21 @@ use tauri::State;
 use crate::AppState;
 
 pub const OLLAMA_BASE_URL: &str = "http://localhost:11434";
+
+/// One HTTP client for the whole process.
+///
+/// `reqwest::blocking::Client` owns a Tokio runtime. Building one per call and
+/// dropping it inside an async command aborts the process with "Cannot drop a
+/// runtime in a context where blocking is not allowed", so the client is built
+/// once and never dropped; per-request deadlines are set on each request.
+fn client() -> &'static Client {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        Client::builder()
+            .build()
+            .expect("failed to build the Ollama HTTP client")
+    })
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaModelInfo {
@@ -85,17 +101,49 @@ pub struct ModelIdentity {
     pub digest: Option<String>,
 }
 
+/// Default context window for every model call.
+///
+/// Ollama's own default (2048) is far below what a `/apply` prompt needs: the
+/// master resume (32 KB) plus the claims block (24 KB) plus rules and template
+/// plus a capped 12 KB posting reaches roughly 73 KB ≈ 18k tokens before the
+/// document itself. 24576 covers that with room for a 2000-token reply. A user
+/// who lowers it in settings is respected; a value below ~18k silently drops the
+/// tail of the prompt.
+pub const DEFAULT_NUM_CTX: u32 = 24_576;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OllamaConfig {
     pub fast_model: Option<String>,
     pub deep_model: Option<String>,
+    /// Context window sent to Ollama on every call.
+    #[serde(default)]
+    pub num_ctx: Option<u32>,
+}
+
+/// Build the Ollama `options` payload in one place so the chat and generate
+/// paths cannot drift apart.
+fn request_options(
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    num_ctx: Option<u32>,
+) -> serde_json::Value {
+    let mut options = serde_json::json!({});
+    if let Some(temp) = temperature {
+        options["temperature"] = serde_json::json!(temp);
+    }
+    if let Some(max_tok) = max_tokens {
+        options["num_predict"] = serde_json::json!(max_tok);
+    }
+    if let Some(context) = num_ctx {
+        options["num_ctx"] = serde_json::json!(context);
+    }
+    options
 }
 
 /// Check Ollama daemon health.
 #[tauri::command]
 pub fn ollama_health_check() -> Result<bool, String> {
-    let client = Client::new();
-    let response = client
+    let response = client()
         .get(format!("{}/api/tags", OLLAMA_BASE_URL))
         .timeout(Duration::from_secs(5))
         .send();
@@ -109,8 +157,7 @@ pub fn ollama_health_check() -> Result<bool, String> {
 /// List available models from local Ollama daemon.
 #[tauri::command]
 pub fn get_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
-    let client = Client::new();
-    let response = client
+    let response = client()
         .get(format!("{}/api/tags", OLLAMA_BASE_URL))
         .timeout(Duration::from_secs(10))
         .send();
@@ -131,7 +178,7 @@ pub fn get_ollama_models() -> Result<Vec<OllamaModelInfo>, String> {
 /// Resolve the model name to the digest Ollama currently serves. A mutable tag
 /// such as `:latest` is not a version; the digest is.
 pub fn model_identity(model: &str) -> ModelIdentity {
-    let digest = Client::new()
+    let digest = client()
         .get(format!("{}/api/tags", OLLAMA_BASE_URL))
         .timeout(Duration::from_secs(5))
         .send()
@@ -168,13 +215,20 @@ pub fn chat_with_ollama(
     max_tokens: Option<u32>,
     format: Option<String>,
 ) -> Result<OllamaChatResponse, String> {
-    let mut options = serde_json::json!({});
-    if let Some(temp) = temperature {
-        options["temperature"] = serde_json::json!(temp);
-    }
-    if let Some(max_tok) = max_tokens {
-        options["num_predict"] = serde_json::json!(max_tok);
-    }
+    chat_with_ollama_ctx(model, messages, temperature, max_tokens, format, None)
+}
+
+/// Chat completion with an explicit context window. Generation paths pass
+/// `OllamaConfig::num_ctx`; the frontend chat command leaves it unset.
+pub fn chat_with_ollama_ctx(
+    model: String,
+    messages: Vec<OllamaChatMessage>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    format: Option<String>,
+    num_ctx: Option<u32>,
+) -> Result<OllamaChatResponse, String> {
+    let options = request_options(temperature, max_tokens, num_ctx);
 
     let request = OllamaChatRequest {
         model: model.clone(),
@@ -186,13 +240,10 @@ pub fn chat_with_ollama(
 
     let mut last_err: Option<String> = None;
     for attempt in 0..3 {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .map_err(|e| format!("Failed to build client: {}", e))?;
-        let response = client
+        let response = client()
             .post(format!("{}/api/chat", OLLAMA_BASE_URL))
             .header("Connection", "keep-alive")
+            .timeout(Duration::from_secs(300))
             .json(&request)
             .send();
 
@@ -217,6 +268,26 @@ pub fn chat_with_ollama(
     Err(last_err.unwrap_or_else(|| "Ollama chat request failed".to_string()))
 }
 
+/// Chat completion, executed off the async worker threads.
+///
+/// The blocking client parks its thread until Ollama answers, so async callers
+/// must reach it through this wrapper rather than calling the sync function
+/// directly from an async command.
+pub async fn chat_with_ollama_async(
+    model: String,
+    messages: Vec<OllamaChatMessage>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    format: Option<String>,
+    num_ctx: Option<u32>,
+) -> Result<OllamaChatResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        chat_with_ollama_ctx(model, messages, temperature, max_tokens, format, num_ctx)
+    })
+    .await
+    .map_err(|error| format!("Ollama chat task failed: {}", error))?
+}
+
 /// Send a text generation request to Ollama (non-streaming).
 #[tauri::command]
 pub fn generate_with_ollama(
@@ -227,13 +298,20 @@ pub fn generate_with_ollama(
     max_tokens: Option<u32>,
     format: Option<String>,
 ) -> Result<OllamaGenerateResponse, String> {
-    let mut options = serde_json::json!({});
-    if let Some(temp) = temperature {
-        options["temperature"] = serde_json::json!(temp);
-    }
-    if let Some(max_tok) = max_tokens {
-        options["num_predict"] = serde_json::json!(max_tok);
-    }
+    generate_with_ollama_ctx(model, prompt, system, temperature, max_tokens, format, None)
+}
+
+/// Text generation with an explicit context window.
+pub fn generate_with_ollama_ctx(
+    model: String,
+    prompt: String,
+    system: Option<String>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    format: Option<String>,
+    num_ctx: Option<u32>,
+) -> Result<OllamaGenerateResponse, String> {
+    let options = request_options(temperature, max_tokens, num_ctx);
 
     let request = OllamaGenerateRequest {
         model: model.clone(),
@@ -246,13 +324,10 @@ pub fn generate_with_ollama(
 
     let mut last_err: Option<String> = None;
     for attempt in 0..3 {
-        let client = Client::builder()
-            .timeout(Duration::from_secs(300))
-            .build()
-            .map_err(|e| format!("Failed to build client: {}", e))?;
-        let response = client
+        let response = client()
             .post(format!("{}/api/generate", OLLAMA_BASE_URL))
             .header("Connection", "keep-alive")
+            .timeout(Duration::from_secs(300))
             .json(&request)
             .send();
 
@@ -277,11 +352,41 @@ pub fn generate_with_ollama(
     Err(last_err.unwrap_or_else(|| "Ollama generate request failed".to_string()))
 }
 
+/// Generation, executed off the async worker threads.
+pub async fn generate_with_ollama_async(
+    model: String,
+    prompt: String,
+    system: Option<String>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    format: Option<String>,
+    num_ctx: Option<u32>,
+) -> Result<OllamaGenerateResponse, String> {
+    tokio::task::spawn_blocking(move || {
+        generate_with_ollama_ctx(model, prompt, system, temperature, max_tokens, format, num_ctx)
+    })
+    .await
+    .map_err(|error| format!("Ollama generate task failed: {}", error))?
+}
+
+/// Resolve a model digest without blocking the async worker threads.
+pub async fn model_identity_async(model: String) -> ModelIdentity {
+    let name = model.clone();
+    match tokio::task::spawn_blocking(move || model_identity(&model)).await {
+        Ok(identity) => identity,
+        Err(_) => ModelIdentity {
+            name,
+            digest: None,
+        },
+    }
+}
+
 /// Save Ollama model role configuration (fast/deep) to app_settings.
 #[tauri::command]
 pub fn save_ollama_config(
     fast_model: Option<String>,
     deep_model: Option<String>,
+    num_ctx: Option<u32>,
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
     let db_path_opt = state.db_path.lock().unwrap();
@@ -301,6 +406,13 @@ pub fn save_ollama_config(
             "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ollama_deep_model', ?1)",
             [dm],
         ).map_err(|e| format!("Failed to save deep model: {}", e))?;
+    }
+    if let Some(context) = num_ctx {
+        let context = if context < 2048 { 2048 } else { context };
+        conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ollama_num_ctx', ?1)",
+            [context.to_string()],
+        ).map_err(|e| format!("Failed to save context window: {}", e))?;
     }
 
     Ok(true)
@@ -329,6 +441,22 @@ pub fn get_ollama_config(
         |row| row.get(0),
     ).ok();
 
+    let saved_num_ctx: Option<u32> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'ollama_num_ctx'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    let num_ctx = saved_num_ctx.unwrap_or(DEFAULT_NUM_CTX);
+    if saved_num_ctx.is_none() {
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO app_settings (key, value) VALUES ('ollama_num_ctx', ?1)",
+            [num_ctx.to_string()],
+        );
+    }
+
     // Auto-set defaults if not configured
     if fast_model.is_none() || deep_model.is_none() {
         let default_model = "llama3.2:latest".to_string();
@@ -346,18 +474,47 @@ pub fn get_ollama_config(
         }
         return Ok(OllamaConfig {
             fast_model: Some(default_model.clone()),
-            deep_model: Some(default_model)
+            deep_model: Some(default_model),
+            num_ctx: Some(num_ctx),
         });
     }
 
-    Ok(OllamaConfig { fast_model, deep_model })
+    Ok(OllamaConfig {
+        fast_model,
+        deep_model,
+        num_ctx: Some(num_ctx),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{request_options, DEFAULT_NUM_CTX};
+
+    #[test]
+    fn num_ctx_reaches_the_options_payload() {
+        let options = request_options(Some(0.3), Some(2000), Some(16_384));
+        assert_eq!(options["num_ctx"], serde_json::json!(16_384));
+        assert_eq!(options["temperature"], serde_json::json!(0.3));
+        assert_eq!(options["num_predict"], serde_json::json!(2000));
+    }
+
+    #[test]
+    fn num_ctx_is_omitted_when_unset() {
+        let options = request_options(None, None, None);
+        assert!(options.get("num_ctx").is_none());
+    }
+
+    #[test]
+    fn default_context_covers_the_prompt_ceiling() {
+        // 32 KB resume + 24 KB claims + 12 KB posting is roughly 18k tokens.
+        assert!(DEFAULT_NUM_CTX >= 20_480);
+    }
 }
 
 /// Stream model pull progress via text output (sequential lines).
 #[tauri::command]
 pub fn pull_ollama_model_progress(model_name: String) -> Result<String, String> {
-    let client = Client::new();
-    let response = client
+    let response = client()
         .post(format!("{}/api/pull", OLLAMA_BASE_URL))
         .json(&serde_json::json!({ "name": model_name, "stream": true }))
         .timeout(Duration::from_secs(900))
