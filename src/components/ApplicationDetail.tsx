@@ -553,6 +553,62 @@ export default function ApplicationDetail({ result, onClose }: ApplicationDetail
         </div>
       </section>
 
+      {result.recruiter_review && (
+        <section className="mb-4 rounded-xl border border-aether-border bg-aether-surface p-4">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-row font-semibold text-aether-text">Recruiter review</h3>
+            <span
+              className={`rounded px-2 py-0.5 text-meta uppercase tracking-wide ${
+                result.recruiter_review.verdict === 'shortlist'
+                  ? 'bg-aether-success/10 text-aether-success'
+                  : result.recruiter_review.verdict === 'reject'
+                    ? 'bg-aether-error/10 text-aether-error'
+                    : 'bg-aether-warning/10 text-aether-warning'
+              }`}
+            >
+              {result.recruiter_review.verdict}
+            </span>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <div>
+              <p className="mb-1 text-meta font-medium text-aether-text">Strengths</p>
+              <ul className="space-y-1">
+                {(result.recruiter_review.strengths || []).map((point: any, index: number) => (
+                  <li key={`strength-${index}`} className="text-body text-aether-text">
+                    {point.text}
+                    <span className="mt-0.5 block font-mono text-meta text-aether-text-muted">
+                      {(point.evidence || []).join(', ')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="mb-1 text-meta font-medium text-aether-text">Weaknesses</p>
+              <ul className="space-y-1">
+                {(result.recruiter_review.weaknesses || []).map((point: any, index: number) => (
+                  <li key={`weakness-${index}`} className="text-body text-aether-text">
+                    {point.text}
+                    <span className="mt-0.5 block font-mono text-meta text-aether-text-muted">
+                      {(point.evidence || []).join(', ')}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+          <p className="mb-1 mt-3 text-meta font-medium text-aether-text">Quick improvements</p>
+          <ul className="space-y-1">
+            {(result.recruiter_review.improvements || []).map((item: any, index: number) => (
+              <li key={`improvement-${index}`} className="text-body text-aether-text">
+                {item.text}
+                <span className="ml-2 font-mono text-meta text-aether-text-muted">{item.target}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <div className="grid gap-4 lg:grid-cols-2">
         <DocumentPanel
           title="Resume"

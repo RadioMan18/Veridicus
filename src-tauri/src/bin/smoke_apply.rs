@@ -52,6 +52,10 @@ mod resume_parser;
 mod ats_engine;
 #[path = "../keywords.rs"]
 mod keywords;
+#[path = "../recruiter_review.rs"]
+mod recruiter_review;
+#[path = "../pack.rs"]
+mod pack;
 #[path = "../resume_exporter.rs"]
 mod resume_exporter;
 
@@ -140,6 +144,57 @@ fn main() {
                 Err(error) => println!("claims: unreadable ({error})"),
             }
         }
+    }
+
+    // Maintenance mode: exercise stages 4 and 5 against an application that
+    // already has documents, without rerunning the stochastic apply pipeline.
+    if let Ok(app_id) = std::env::var("CAREEROS_SMOKE_REVIEW_APP") {
+        let review_state = state.clone();
+        let review_id = app_id.clone();
+        let review = tauri::async_runtime::block_on(async move {
+            recruiter_review::generate_recruiter_review(Some(review_id), review_state).await
+        });
+        match &review {
+            Ok(review) => println!(
+                "review: verdict={} evidence={} strengths={} weaknesses={} improvements={} attempts={}",
+                review.verdict,
+                review.evidence.len(),
+                review.strengths.len(),
+                review.weaknesses.len(),
+                review.improvements.len(),
+                review.attempts
+            ),
+            Err(error) => {
+                eprintln!("SMOKE FAILED: stage 4 review: {}", error);
+                std::process::exit(1);
+            }
+        }
+
+        let pack_state = state.clone();
+        let pack_id = app_id.clone();
+        let pack = tauri::async_runtime::block_on(async move {
+            pack::generate_application_pack(Some(pack_id), pack_state).await
+        });
+        match &pack {
+            Ok(pack) => println!("pack: path={} bytes={}", pack.path, pack.markdown.len()),
+            Err(error) => {
+                eprintln!("SMOKE FAILED: stage 5 pack: {}", error);
+                std::process::exit(1);
+            }
+        }
+
+        let app_dir = workspace_root().join("applications").join(&app_id);
+        for name in ["recruiter-review.md", "application-pack.md"] {
+            match std::fs::metadata(app_dir.join(name)) {
+                Ok(meta) => println!("stage45 {name}: {} bytes", meta.len()),
+                Err(_) => {
+                    eprintln!("SMOKE FAILED: stage45 {name} missing");
+                    std::process::exit(1);
+                }
+            }
+        }
+        println!("SMOKE STAGE45 OK");
+        return;
     }
 
     // Maintenance mode: repair a ledger polluted by the pre-fix DOCX parser.
@@ -331,6 +386,45 @@ fn main() {
     match &refusal {
         Ok(commit) => println!("commit gate: FAILED, committed without acknowledgement ({commit})"),
         Err(reason) => println!("commit gate: refused ({reason})"),
+    }
+
+    // Optional stage 4/5 verification on the application just generated: the
+    // recruiter review command and the pack assembly must both produce files.
+    if std::env::var("CAREEROS_SMOKE_REVIEW").is_ok() {
+        let review_state = state.clone();
+        let review_id = result.application_id.clone();
+        let review = tauri::async_runtime::block_on(async move {
+            recruiter_review::generate_recruiter_review(Some(review_id), review_state).await
+        });
+        match review {
+            Ok(review) => println!(
+                "review: verdict={} evidence={} strengths={} weaknesses={} improvements={} attempts={}",
+                review.verdict,
+                review.evidence.len(),
+                review.strengths.len(),
+                review.weaknesses.len(),
+                review.improvements.len(),
+                review.attempts
+            ),
+            Err(error) => println!("review: FAILED {error}"),
+        }
+
+        let pack_state = state.clone();
+        let pack_id = result.application_id.clone();
+        let pack = tauri::async_runtime::block_on(async move {
+            pack::generate_application_pack(Some(pack_id), pack_state).await
+        });
+        match pack {
+            Ok(pack) => println!("pack: path={} bytes={}", pack.path, pack.markdown.len()),
+            Err(error) => println!("pack: FAILED {error}"),
+        }
+
+        for name in ["recruiter-review.md", "application-pack.md"] {
+            match std::fs::metadata(app_dir.join(name)) {
+                Ok(meta) => println!("stage45 {name}: {} bytes", meta.len()),
+                Err(_) => println!("stage45 {name}: MISSING"),
+            }
+        }
     }
 
     if !result.success {

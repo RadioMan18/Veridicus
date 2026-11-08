@@ -744,27 +744,6 @@ fn generated_document_problem(skill_id: &str, output: &str) -> Option<String> {
     }
 
     if skill_id == "cover-letter" {
-        const CLICHES: &[&str] = &[
-            "i am excited to apply",
-            "leverage my",
-            "aligns perfectly",
-            "ideal candidate",
-            "unique blend",
-            "excellent fit",
-            "passion for",
-            "comprehensive overview of my experience",
-            "i am confident that my",
-            "i am writing to express",
-        ];
-        if let Some(cliche) = CLICHES.iter().find(|cliche| normalized.contains(*cliche)) {
-            // Name the phrase: the retry prompt repeats this reason, and a generic
-            // message gave the model nothing to remove.
-            return Some(format!(
-                "the letter relies on generic filler (\"{}\") instead of specific evidence",
-                cliche
-            ));
-        }
-
         let word_count = normalized.split_whitespace().count();
         let paragraph_count = output
             .split("\n\n")
@@ -779,6 +758,46 @@ fn generated_document_problem(skill_id: &str, output: &str) -> Option<String> {
     }
 
     None
+}
+
+/// Cliches are weak evidence of a generic letter, not proof: a specific letter
+/// can still say "passion for" in a sentence about a real result. The phrase is
+/// only reported when the letter also fails the grounding check.
+fn cliche_in(output: &str) -> Option<&'static str> {
+    const CLICHES: &[&str] = &[
+        "i am excited to apply",
+        "leverage my",
+        "aligns perfectly",
+        "ideal candidate",
+        "unique blend",
+        "excellent fit",
+        "passion for",
+        "comprehensive overview of my experience",
+        "i am confident that my",
+        "i am writing to express",
+    ];
+    let lower = output.to_lowercase();
+    CLICHES.iter().copied().find(|cliche| {
+        lower.match_indices(cliche).any(|(start, _)| {
+            let before = lower[..start].chars().next_back();
+            let after = lower[start + cliche.len()..].chars().next();
+            before.map_or(true, |character| !character.is_alphanumeric())
+                && after.map_or(true, |character| !character.is_alphanumeric())
+        })
+    })
+}
+
+/// A cover letter is rejected for generic filler only when it also fails to
+/// cite confirmed evidence; a grounded letter may use one of those phrases.
+fn cover_letter_problem(output: &str, claims: &[Claim]) -> Option<String> {
+    let grounding = letter_grounding_problem(output, claims)?;
+    match cliche_in(output) {
+        Some(cliche) => Some(format!(
+            "the letter relies on generic filler (\"{}\") instead of specific evidence",
+            cliche
+        )),
+        None => Some(grounding),
+    }
 }
 
 /// Detect a letter that talks about the candidate in generalities instead of citing the ledger.
@@ -825,11 +844,13 @@ fn build_document_retry_request(
     problem: &str,
 ) -> String {
     format!(
-        "Revise the rejected draft below into a complete document. The rejection reason was: {}. \
-Remove every bracketed placeholder; do not replace unknown details with guesses. Omit unsupported \
-contact, education, dates, and other unknown details entirely. Keep only statements supported by \
-the verified facts. Do not copy the job description or the source materials into the document. \
-Return only the corrected document in Markdown.\n\n\
+        "Revise the rejected draft below into a different, complete document — not the same text with one \
+phrase removed. The rejection reason was: {}. Do not reuse the phrase named in that reason, or a close \
+variant of it. Name at least three distinct confirmed claims and stay close to their confirmed wording \
+so the evidence is recognisable. Remove every bracketed placeholder; do not replace unknown details with \
+guesses. Omit unsupported contact, education, dates, and other unknown details entirely. Keep only \
+statements supported by the verified facts. Do not copy the job description or the source materials into \
+the document. Return only the corrected document in Markdown.\n\n\
 REJECTED DRAFT TO REVISE:\n{}\n\n\
 VERIFIED SOURCE MATERIAL (for factual checking only):\n{}",
         problem, rejected_draft, source_material
@@ -968,7 +989,7 @@ pub async fn execute_skill(
     let first_output = clean_generated_markdown(&chat_response.message.content);
     let first_problem = generated_document_problem(&input.skill_id, &first_output).or_else(|| {
         if input.skill_id == "cover-letter" {
-            letter_grounding_problem(&first_output, &claims)
+            cover_letter_problem(&first_output, &claims)
         } else {
             None
         }
@@ -1001,7 +1022,7 @@ pub async fn execute_skill(
         let retry_problem = generated_document_problem(&input.skill_id, &retried_output)
             .or_else(|| {
                 if input.skill_id == "cover-letter" {
-                    letter_grounding_problem(&retried_output, &claims)
+                    cover_letter_problem(&retried_output, &claims)
                 } else {
                     None
                 }
@@ -1290,7 +1311,7 @@ mod tests {
 }
 #[cfg(test)]
 mod grounding_tests {
-    use super::{generated_document_problem, letter_grounding_problem, Claim};
+    use super::{cover_letter_problem, generated_document_problem, letter_grounding_problem, Claim};
 
     fn claim(wording: &str) -> Claim {
         Claim {
@@ -1331,11 +1352,23 @@ mod grounding_tests {
     }
 
     #[test]
-    fn cliche_letters_are_rejected() {
+    fn a_generic_cliche_letter_is_rejected_for_retry() {
         let letter = "Dear Hiring Manager,\n\nI am excited to apply for the role and leverage my expertise in learning.\n\nSincerely,\nJane";
-        let problem = generated_document_problem("cover-letter", letter).expect("rejected");
+        let claims = [claim(
+            "Reduced planning time from eight hours to thirty minutes",
+        )];
+        let problem = cover_letter_problem(letter, &claims).expect("rejected");
         assert!(problem.contains("generic filler"), "{problem}");
         assert!(problem.contains("i am excited to apply"), "{problem}");
+    }
+
+    #[test]
+    fn a_specific_letter_may_contain_a_soft_phrase() {
+        let letter = "Dear Hiring Manager,\n\nI have a passion for learning technology. At Altera I reduced planning time from eight hours to thirty minutes.\n\nSincerely,\nJane";
+        let claims = [claim(
+            "Reduced planning time from eight hours to thirty minutes",
+        )];
+        assert_eq!(cover_letter_problem(letter, &claims), None);
     }
 }
 

@@ -28,6 +28,8 @@ mod resume_exporter;
 mod keywords;
 mod interview_prep;
 mod bullet_review;
+mod recruiter_review;
+mod pack;
 
 use std::sync::Mutex;
 use tauri::generate_handler;
@@ -112,6 +114,8 @@ pub fn main() {
             interview_prep::start_mock_interview,
             bullet_review::review_bullets,
             bullet_review::record_approved_wording,
+            recruiter_review::generate_recruiter_review,
+            pack::generate_application_pack,
             skills::execute_skill,
             skills::list_skill_templates,
             skills::seed_default_skills,

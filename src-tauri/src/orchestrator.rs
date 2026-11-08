@@ -348,6 +348,7 @@ pub struct ApplyResult {
     pub fact_check_report: Option<crate::fact_check::FactCheckReport>,
     pub resume_fact_check_report: Option<crate::fact_check::FactCheckReport>,
     pub guardrail_report: Option<crate::guardrails::GuardrailReport>,
+    pub recruiter_review: Option<crate::recruiter_review::RecruiterReview>,
     pub resume_pdf_compiled: Option<crate::typst_engine::CompileResult>,
     pub resume_visual_flags: Option<crate::typst_engine::VisualFlags>,
     pub resume_pages_rasterized: Option<crate::typst_engine::RasterizeResult>,
@@ -378,6 +379,7 @@ pub async fn execute_apply_workflow(
         fact_check_report: None,
         resume_fact_check_report: None,
         guardrail_report: None,
+        recruiter_review: None,
         resume_pdf_compiled: None,
         resume_visual_flags: None,
         resume_pages_rasterized: None,
@@ -875,6 +877,53 @@ pub async fn execute_apply_workflow(
                 );
             }
             result.guardrail_report = Some(report);
+
+            // Recruiter-style verdict over the documents just written. Evidence is
+            // built before the call so the model can only cite real ledger items.
+            let resume_md = result
+                .resume_tailored
+                .as_ref()
+                .map(|resume| resume.markdown_output.clone())
+                .unwrap_or_default();
+            let letter_md = result
+                .cover_letter
+                .as_ref()
+                .map(|letter| letter.markdown_output.clone())
+                .unwrap_or_default();
+            let review_context = crate::recruiter_review::build_context(&conn, &app_id, &claims);
+            // The deep model handles the JSON contract; the fast model tends to echo
+            // the schema itself instead of choosing a verdict.
+            let review_model = scope_config
+                .deep_model
+                .clone()
+                .or_else(|| scope_config.fast_model.clone())
+                .unwrap_or_else(|| "llama3.2:latest".to_string());
+            match crate::recruiter_review::review_documents(
+                &employer,
+                &role,
+                &jd_text,
+                &resume_md,
+                &letter_md,
+                &claims,
+                &review_context,
+                &review_model,
+                scope_config.num_ctx,
+            )
+            .await
+            {
+                Ok(review) => {
+                    let _ = fs::write(app_dir.join("recruiter-review.md"), &review.markdown);
+                    let _ = fs::write(
+                        app_dir.join("recruiter-review.json"),
+                        serde_json::to_string_pretty(&review).unwrap_or_default(),
+                    );
+                    result.recruiter_review = Some(review);
+                }
+                Err(error) => append_warning(
+                    &mut result.error_message,
+                    format!("Recruiter review skipped: {}", error),
+                ),
+            }
         }
         Err(error) => {
             result.error_message = Some(format!("Guardrail evaluation failed: {}", error));

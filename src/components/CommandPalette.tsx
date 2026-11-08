@@ -62,6 +62,20 @@ const COMMANDS: PaletteCommand[] = [
     takesArgument: false,
   },
   {
+    id: '/review',
+    description: 'Recruiter-style verdict on the latest application',
+    hint: 'no arguments',
+    example: '/review',
+    takesArgument: false,
+  },
+  {
+    id: '/pack',
+    description: 'Assemble the application pack from existing artifacts',
+    hint: 'no arguments',
+    example: '/pack',
+    takesArgument: false,
+  },
+  {
     id: '/mock',
     description: 'STAR-method interview simulator',
     hint: 'a role title',
@@ -436,6 +450,18 @@ export default function CommandPalette({
           return `${head}${body}${markers}`;
         });
         onHistory({ kind: 'success', text: `## Bullet review\n\n${lines.join('\n\n')}` });
+        return;
+      }
+
+      if (known.id === '/review') {
+        const review: any = await invoke('generate_recruiter_review', { applicationId: null });
+        onHistory({ kind: 'success', text: review.markdown });
+        return;
+      }
+
+      if (known.id === '/pack') {
+        const pack: any = await invoke('generate_application_pack', { applicationId: null });
+        onHistory({ kind: 'success', text: pack.markdown });
         return;
       }
 
