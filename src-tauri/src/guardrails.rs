@@ -135,23 +135,49 @@ fn contains_word(text: &str, word: &str) -> bool {
     text.split_whitespace().any(|token| token == word)
 }
 
-/// True when a sentence or bullet can be traced to a confirmed claim, either by a
-/// four-word verbatim window or by substantial content-word overlap.
+/// True when a sentence or bullet can be traced to a confirmed claim: a four-word
+/// verbatim window, or content words that account for most of the bullet, or a
+/// claim whose content words the bullet mostly covers.
+///
+/// The overlap is measured in both directions because a bullet is normally longer
+/// than the claim behind it. A role line, a label or a second clause would
+/// otherwise push a well-grounded bullet below the threshold, which makes the
+/// check fire on honest bullets and teaches the user to ignore it.
 pub fn is_grounded(text: &str, claims: &[Claim]) -> bool {
     let normalized = normalize(text);
     let words: Vec<&str> = normalized.split_whitespace().collect();
+    let content = content_words(&normalized);
 
     for claim in claims {
-        let claim_normalized = normalize(&claim.confirmed_wording);
-        if words.len() >= 4 {
-            for window in words.windows(4) {
-                if claim_normalized.contains(&window.join(" ")) {
-                    return true;
+        for wording in [&claim.confirmed_wording, &claim.statement] {
+            let claim_normalized = normalize(wording);
+            if claim_normalized.is_empty() {
+                continue;
+            }
+            if words.len() >= 4 {
+                for window in words.windows(4) {
+                    if claim_normalized.contains(&window.join(" ")) {
+                        return true;
+                    }
                 }
             }
-        }
-        if content_word_overlap(&normalized, &claim_normalized) >= 0.6 {
-            return true;
+            let claim_words: HashSet<String> =
+                content_words(&claim_normalized).into_iter().collect();
+            if claim_words.is_empty() || content.is_empty() {
+                continue;
+            }
+            let matched = claim_words
+                .iter()
+                .filter(|word| content.iter().any(|entry| entry == *word))
+                .count();
+            if matched < 4 {
+                continue;
+            }
+            let claim_covered = matched as f32 / claim_words.len() as f32;
+            let bullet_covered = matched as f32 / content.len() as f32;
+            if claim_covered >= 0.6 || bullet_covered >= 0.6 {
+                return true;
+            }
         }
     }
 
@@ -279,6 +305,36 @@ fn finalize(mut report: GuardrailReport) -> GuardrailReport {
     report
 }
 
+/// Sections whose bullets are keyword lists or credentials rather than statements
+/// of experience.
+fn is_list_section(section: &str) -> bool {
+    matches!(section, "education" | "certifications" | "certificates")
+        || section.contains("skill")
+        || section.contains("competen")
+        || section.contains("expertise")
+}
+
+/// The part of a bullet that makes a factual statement: the text after a short
+/// leading label. A label with nothing after it states no fact of its own.
+fn bullet_statement(bullet: &str) -> Option<&str> {
+    let Some((label, rest)) = bullet.split_once(':') else {
+        return Some(bullet);
+    };
+    let label = label.trim();
+    let rest = rest.trim();
+    if label.is_empty() || label.len() > 60 {
+        return Some(bullet);
+    }
+    if rest.is_empty() {
+        return None;
+    }
+    if rest.len() >= 20 {
+        Some(rest)
+    } else {
+        Some(bullet)
+    }
+}
+
 fn ungrounded_resume_bullets(draft: &str, claims: &[Claim]) -> Vec<String> {
     let mut findings = Vec::new();
     let mut section = String::new();
@@ -292,15 +348,22 @@ fn ungrounded_resume_bullets(draft: &str, claims: &[Claim]) -> Vec<String> {
         if trimmed.starts_with("###") || !trimmed.starts_with("- ") {
             continue;
         }
-        // Education and certification lines are credentials, not experience claims.
-        if matches!(section.as_str(), "education" | "certifications" | "certificates") {
+        // Education, certification and skills lines are credentials and keyword
+        // lists, not experience claims. Numbers in them are still covered by the
+        // document-wide metric check.
+        if is_list_section(&section) {
             continue;
         }
         let bullet = trimmed.trim_start_matches("- ").trim();
-        if bullet.len() < 20 {
+        // A bullet may open with its own label ("Sunrise EHR Documentation:
+        // Maintained ..."); the label is a heading, so judge the statement after it.
+        let Some(statement) = bullet_statement(bullet) else {
+            continue;
+        };
+        if statement.len() < 20 {
             continue;
         }
-        if !is_grounded(bullet, claims) {
+        if !is_grounded(statement, claims) {
             findings.push(format!(
                 "resume bullet is not supported by a confirmed claim: '{}'",
                 bullet
@@ -1069,6 +1132,54 @@ mod tests {
             .collect();
         assert_eq!(ungrounded.len(), 1);
         assert!(ungrounded[0].message.contains("Invented a company-wide platform"));
+    }
+
+    #[test]
+    fn an_expanded_bullet_resting_on_a_claim_is_grounded() {
+        let draft = "## Experience\n- Supported Altera TouchWorks go-lives across the U.S., including end-user readiness and post-live optimization for clinical staff.\n";
+        let report = evaluate_document(
+            RESUME,
+            draft,
+            &[claim("Supported 50+ enterprise go-lives for Altera TouchWorks EHR.")],
+            &[],
+            None,
+            None,
+            &[],
+        );
+
+        assert!(report.findings.is_empty(), "findings: {:?}", report.findings);
+    }
+
+    #[test]
+    fn a_labelled_bullet_is_judged_on_the_statement_after_the_label() {
+        let draft = "## Experience\n- Sunrise EHR Documentation: Reorganized the ILT Courseware SharePoint structure, cutting asset search time from 30 minutes to under 5 minutes.\n";
+        let report = evaluate_document(
+            RESUME,
+            draft,
+            &[claim("Reorganized the ILT Courseware SharePoint structure, cutting asset search time from 30 minutes to under 5 minutes")],
+            &[],
+            None,
+            None,
+            &[],
+        );
+
+        assert!(report.findings.is_empty(), "findings: {:?}", report.findings);
+    }
+
+    #[test]
+    fn a_skills_list_is_not_checked_as_experience() {
+        let draft = "## Skills\n- AI & Process Automation\n- Cross-Functional Collaboration\n";
+        let report = evaluate_document(
+            RESUME,
+            draft,
+            &[claim("Delivered work for the team")],
+            &[],
+            None,
+            None,
+            &[],
+        );
+
+        assert!(report.findings.is_empty(), "findings: {:?}", report.findings);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import Markdown from './Markdown';
+import { withCompletionChime } from '../lib/completionSound';
 
 interface InterviewQuestion {
   question: string;
@@ -99,7 +100,10 @@ export default function PrepView({ onOpenFit }: { onOpenFit?: () => void }) {
     setLoading(true);
     setError(null);
     try {
-      const briefing: string = await invoke('run_company_research', { company: name });
+      const briefing: string = await withCompletionChime(
+        () => invoke<string>('run_company_research', { company: name }),
+        { label: 'Company briefing' },
+      );
       setOutput(briefing);
     } catch (err: any) {
       setError(err?.message || String(err));
@@ -113,9 +117,13 @@ export default function PrepView({ onOpenFit }: { onOpenFit?: () => void }) {
     setPrepLoading(true);
     setPrepError(null);
     try {
-      const value = await invoke<InterviewPrep>('generate_interview_prep', {
-        applicationId: appId,
-      });
+      const value = await withCompletionChime(
+        () =>
+          invoke<InterviewPrep>('generate_interview_prep', {
+            applicationId: appId,
+          }),
+        { label: 'Interview prep' },
+      );
       setPrep(value);
     } catch (err: any) {
       setPrepError(err?.message || String(err));

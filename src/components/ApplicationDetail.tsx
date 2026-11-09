@@ -405,8 +405,14 @@ export default function ApplicationDetail({ result, onClose }: ApplicationDetail
             ) : (
               <span>Review both documents and their findings, then approve.</span>
             )}
-            {folderError && <span className="ml-2 text-aether-error">{folderError}</span>}
-            {approveError && <span className="ml-2 text-aether-error">{approveError}</span>}
+            {folderError && (
+              <div className="mt-1 whitespace-pre-wrap break-words text-aether-error">{folderError}</div>
+            )}
+            {approveError && (
+              <div className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words text-aether-error">
+                {approveError}
+              </div>
+            )}
           </div>
 
           {!commit && (

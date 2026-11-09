@@ -228,12 +228,14 @@ pub(crate) fn polish_resume_markdown(markdown: &str) -> String {
     use std::collections::HashSet;
 
     let bold_only = regex::Regex::new(r"^\*\*([^*]+)\*\*$").unwrap();
-    let bold_label = regex::Regex::new(r"^\*\*([^*:]{2,80}):\*\*\s*").unwrap();
     let year_range = regex::Regex::new(
         r"((19|20)\d{2}|\d{1,2}/(19|20)\d{2})\s*[-\u{2013}\u{2014}]\s*((19|20)\d{2}|\d{1,2}/(19|20)\d{2}|[Pp]resent)",
     )
     .unwrap();
     let bullet_glyph = regex::Regex::new(r"^[\u{2022}*]\s+").unwrap();
+    // Used only to compare bullets: two labels may head the same sentence, which is
+    // still a duplicate, even though both labels stay in the rendered resume.
+    let bold_label = regex::Regex::new(r"^\*\*([^*:]{2,80}):\*\*\s*").unwrap();
 
     const SECTIONS: &[&str] = &[
         "summary",
@@ -282,6 +284,10 @@ pub(crate) fn polish_resume_markdown(markdown: &str) -> String {
                 Some(format!("# {}", text))
             } else if year_range.is_match(text) {
                 Some(format!("### {}", text))
+            } else if text.contains('|') {
+                // A capitals line with a divider under the name is a headline, not a
+                // section, and stays a bold subtitle.
+                None
             } else if SECTIONS.contains(&lower.as_str()) || uppercase_ratio > 0.6 {
                 Some(format!("## {}", text))
             } else {
@@ -294,15 +300,12 @@ pub(crate) fn polish_resume_markdown(markdown: &str) -> String {
             }
         }
 
-        if let Some(rest) = line.strip_prefix("- ") {
-            // Category labels bolted onto bullets read as keyword stuffing.
-            let stripped = bold_label.replace(rest, "").to_string();
-            if !stripped.trim().is_empty() {
-                line = format!("- {}", stripped.trim());
-            }
-
+        if line.starts_with("- ") {
+            // A bold label heading a bullet is part of the resume voice the shipped
+            // templates ask for, so it is kept as written.
             // Identical sentences under two employers read as fabrication; keep the first.
-            let key: String = line[2..]
+            let comparable = bold_label.replace(&line[2..], "").to_string();
+            let key: String = comparable
                 .to_lowercase()
                 .chars()
                 .map(|character| {
@@ -325,11 +328,38 @@ pub(crate) fn polish_resume_markdown(markdown: &str) -> String {
         output.push(line);
     }
 
-    let mut polished = output.join("\n");
+    let mut polished = separate_blocks(&output.join("\n"));
     while polished.contains("\n\n\n") {
         polished = polished.replace("\n\n\n", "\n\n");
     }
     polished.trim().to_string()
+}
+
+/// A role line, an employer line and a degree line are separate blocks. Without a
+/// blank line between them Markdown folds them into one paragraph, which is how a
+/// degree ends up printed on the end of the line above it.
+fn separate_blocks(markdown: &str) -> String {
+    let mut output: Vec<String> = Vec::new();
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            output.push(String::new());
+            continue;
+        }
+        if let Some(previous) = output.last() {
+            if !previous.trim().is_empty() {
+                let current_bullet = trimmed.starts_with("- ") || trimmed.starts_with("+ ");
+                let previous_bullet =
+                    previous.trim_start().starts_with("- ") || previous.trim_start().starts_with("+ ");
+                let continuation = line.starts_with("  ") && previous_bullet;
+                if !(current_bullet && previous_bullet) && !continuation {
+                    output.push(String::new());
+                }
+            }
+        }
+        output.push(line.to_string());
+    }
+    output.join("\n")
 }
 
 fn escape_typst_text(text: &str) -> String {
@@ -747,8 +777,19 @@ mod polish_tests {
         assert!(polished.starts_with("# JANE DOE"));
         assert!(polished.contains("## PROFESSIONAL EXPERIENCE"));
         assert!(polished.contains("### Second Role (09/2020 \u{2013} 09/2022)"));
-        assert!(polished.contains("- Designed and maintained client-facing manuals for five regions."));
+        assert!(polished.contains("**Category Label:** Designed and maintained client-facing manuals for five regions."));
         assert_eq!(polished.matches("Designed and maintained client-facing manuals").count(), 1);
         assert!(polished.contains("- Taught instructor-led sessions"));
+    }
+
+    #[test]
+    fn consecutive_lines_keep_their_own_line() {
+        let markdown = "## Education\nBachelor of Science, US Naval Academy (9/2004 - 5/2008)\nMaster of Science, US Naval Academy (9/2008 - 5/2010)\n";
+        let polished = polish_resume_markdown(markdown);
+        assert!(polished.contains("## Education\n\nBachelor of Science"), "{polished}");
+        assert!(
+            polished.contains("(9/2004 - 5/2008)\n\nMaster of Science"),
+            "{polished}"
+        );
     }
 }

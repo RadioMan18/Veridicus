@@ -22,6 +22,21 @@ const MAX_DOCUMENT_BYTES: usize = 12_000;
 const MAX_JD_BYTES: usize = 8_000;
 const MAX_EVIDENCE_CLAIMS: usize = 6;
 
+/// Sent as `format`. Plain `"json"` only guarantees well-formed JSON, so a model
+/// may end after `strengths` and still satisfy it — which is how a review arrives
+/// with no weaknesses at all. A schema makes every key, and two items per key,
+/// mandatory at the decoder.
+const REVIEW_SCHEMA: &str = r#"{
+  "type": "object",
+  "properties": {
+    "verdict": {"type": "string", "enum": ["shortlist", "maybe", "reject"]},
+    "strengths": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object", "properties": {"text": {"type": "string"}, "evidence": {"type": "array", "minItems": 1, "items": {"type": "string"}}}, "required": ["text", "evidence"]}},
+    "weaknesses": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object", "properties": {"text": {"type": "string"}, "evidence": {"type": "array", "minItems": 1, "items": {"type": "string"}}}, "required": ["text", "evidence"]}},
+    "improvements": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object", "properties": {"text": {"type": "string"}, "target": {"type": "string"}}, "required": ["text", "target"]}}
+  },
+  "required": ["verdict", "strengths", "weaknesses", "improvements"]
+}"#;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewEvidence {
     pub id: String,
@@ -90,6 +105,98 @@ pub(crate) struct ReviewContext {
     pub claim_ids: HashSet<String>,
     pub gap_ids: HashSet<String>,
     pub marker_ids: HashSet<String>,
+}
+
+/// Append the closers a prefix still needs, so a reply cut off by the token cap
+/// can be read instead of discarded. Returns None when the cut lands mid-string.
+fn close_open_structures(prefix: &str) -> Option<String> {
+    let mut stack: Vec<char> = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+    for character in prefix.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '{' | '[' => stack.push(character),
+            '}' | ']' => {
+                let expected = if character == '}' { '{' } else { '[' };
+                if stack.pop() != Some(expected) {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    if in_string {
+        return None;
+    }
+    let mut repaired = prefix.to_string();
+    while let Some(open) = stack.pop() {
+        repaired.push(if open == '{' { '}' } else { ']' });
+    }
+    Some(repaired)
+}
+
+/// Retry the parse from the last complete value when the reply was truncated.
+fn close_truncated_json(body: &str) -> Option<String> {
+    let cuts: Vec<usize> = body
+        .char_indices()
+        .filter(|(_, character)| matches!(character, '}' | ']' | ','))
+        .map(|(index, _)| index + 1)
+        .rev()
+        .take(400)
+        .collect();
+    for cut in cuts {
+        if !body.is_char_boundary(cut) {
+            continue;
+        }
+        let prefix = body[..cut].trim_end().trim_end_matches(',').trim_end();
+        if let Some(repaired) = close_open_structures(prefix) {
+            if serde_json::from_str::<ReviewDraft>(&repaired).is_ok() {
+                return Some(repaired);
+            }
+        }
+    }
+    None
+}
+
+/// A parsed review, and whether the reply had to be repaired because the model
+/// ran out of room. A repaired reply is still validated, but a failure on it is
+/// reported as truncation so the retry asks for less instead of for a fix.
+struct ParsedReview {
+    draft: ReviewDraft,
+    truncated: bool,
+}
+
+fn parse_review(content: &str) -> Result<ParsedReview, String> {
+    let body = json_body(content);
+    if let Ok(draft) = serde_json::from_str::<ReviewDraft>(body) {
+        return Ok(ParsedReview {
+            draft,
+            truncated: false,
+        });
+    }
+    if let Some(repaired) = close_truncated_json(body) {
+        if let Ok(draft) = serde_json::from_str::<ReviewDraft>(&repaired) {
+            return Ok(ParsedReview {
+                draft,
+                truncated: true,
+            });
+        }
+    }
+    Err(serde_json::from_str::<ReviewDraft>(body)
+        .err()
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "the reply was not valid JSON".to_string()))
 }
 
 /// Models sometimes wrap JSON in a code fence. Parse the object itself.
@@ -361,12 +468,51 @@ pub(crate) fn validate_draft(
     Ok(())
 }
 
+/// Roughly how many bytes of prompt text one token costs. Deliberately low: a
+/// prompt that overruns `num_ctx` is trimmed by Ollama, and the reply then has
+/// nowhere to go.
+const BYTES_PER_TOKEN: usize = 3;
+
+/// Split the context window between reading and replying. The visible JSON is a
+/// few hundred tokens, but a model that reasons before answering can spend
+/// several times that first, so the reply keeps a third of the window and the
+/// documents are capped to what is left instead of to a fixed size.
+/// Where the reply's tokens went, so a failure names the limit it hit instead
+/// of leaving the next attempt to guess.
+fn usage_note(response: &crate::ollama::OllamaChatResponse) -> String {
+    let mut parts = Vec::new();
+    if let Some(reason) = response.done_reason.as_deref() {
+        parts.push(format!("stopped: {}", reason));
+    }
+    if let Some(prompt) = response.prompt_eval_count {
+        parts.push(format!("prompt {} tokens", prompt));
+    }
+    if let Some(reply) = response.eval_count {
+        parts.push(format!("reply {} tokens", reply));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", parts.join(", "))
+    }
+}
+
+fn prompt_caps(num_ctx: u32) -> (usize, usize) {
+    let reply_tokens = (num_ctx / 3).max(1_500);
+    let prompt_bytes = num_ctx.saturating_sub(reply_tokens) as usize * BYTES_PER_TOKEN;
+    let jd = (prompt_bytes * 3 / 10).min(MAX_JD_BYTES);
+    let document = (prompt_bytes * 3 / 10).min(MAX_DOCUMENT_BYTES);
+    (jd, document)
+}
+
 fn prompt(
     role: &str,
     jd: &str,
     resume: &str,
     letter: &str,
     ctx: &ReviewContext,
+    jd_cap: usize,
+    doc_cap: usize,
 ) -> String {
     let mut prompt = format!(
         "## Role
@@ -384,9 +530,9 @@ fn prompt(
 ## Evidence you may cite
 ",
         role,
-        truncate(jd, MAX_JD_BYTES),
-        truncate(resume, MAX_DOCUMENT_BYTES),
-        truncate(letter, MAX_DOCUMENT_BYTES)
+        truncate(jd, jd_cap),
+        truncate(resume, doc_cap),
+        truncate(letter, doc_cap)
     );
     for item in &ctx.evidence {
         prompt.push_str(&format!("- {} — {}
@@ -450,50 +596,67 @@ pub(crate) async fn review_documents(
 ) -> Result<RecruiterReview, String> {
     let system = "You are a recruiter reviewing application materials against a fixed evidence set. \
 Never invent facts, numbers or company details. Return JSON only.";
-    let mut messages = vec![
-        OllamaChatMessage {
-            role: "system".to_string(),
-            content: system.to_string(),
-        },
-        OllamaChatMessage {
-            role: "user".to_string(),
-            content: prompt(role, jd, resume, letter, ctx),
-        },
-    ];
-
-    // The documents alone can approach 8k tokens; keep room for the JSON reply.
-    let num_ctx = Some(num_ctx.unwrap_or(8192).max(8192));
+    let num_ctx = Some(
+        num_ctx
+            .unwrap_or(crate::ollama::DEFAULT_NUM_CTX)
+            .max(8_192),
+    );
+    let (jd_cap, doc_cap) = prompt_caps(num_ctx.unwrap_or(8_192));
     let mut attempts = 0;
     let mut last_problem = String::new();
+    let mut correction: Option<String> = None;
     for _ in 0..2 {
         attempts += 1;
+        // A retry sends less to read, so a reply that ran out of room the first
+        // time gets room back instead of hitting the same wall.
+        let scale = if attempts == 1 { 100 } else { 50 };
+        let mut messages = vec![
+            OllamaChatMessage {
+                role: "system".to_string(),
+                content: system.to_string(),
+            },
+            OllamaChatMessage {
+                role: "user".to_string(),
+                content: prompt(
+                    role,
+                    jd,
+                    resume,
+                    letter,
+                    ctx,
+                    jd_cap * scale / 100,
+                    doc_cap * scale / 100,
+                ),
+            },
+        ];
+        if let Some(pending) = correction.take() {
+            messages.push(OllamaChatMessage {
+                role: "user".to_string(),
+                content: pending,
+            });
+        }
         let response = chat_with_ollama_async(
             model.to_string(),
-            messages.clone(),
+            messages,
             Some(0.2),
-            Some(1500),
-            Some("json".to_string()),
+            // 2600 tokens is a generous two-point review once thinking is off.
+            Some(2600),
+            Some(REVIEW_SCHEMA.to_string()),
             num_ctx,
         )
         .await?;
         let content = response.message.content.clone();
-        let parsed: ReviewDraft = match serde_json::from_str(json_body(&content)) {
-            Ok(mut draft) => {
-                normalize_draft(&mut draft, ctx);
-                draft
-            }
+        let (mut parsed, truncated) = match parse_review(&content) {
+            Ok(parsed) => (parsed.draft, parsed.truncated),
             Err(error) => {
                 last_problem = format!("the model did not return usable review JSON: {}", error);
-                messages.push(OllamaChatMessage {
-                    role: "user".to_string(),
-                    content: format!(
-                        "{}\n\nReturn the JSON again, correcting that problem.",
-                        last_problem
-                    ),
-                });
+                correction = Some(format!(
+                    "{}\n\nReturn the JSON again, correcting that problem.",
+                    last_problem
+                ));
                 continue;
             }
         };
+        normalize_draft(&mut parsed, ctx);
         match validate_draft(&parsed, ctx, claims) {
             Ok(()) => {
                 let review = RecruiterReview {
@@ -535,13 +698,24 @@ Never invent facts, numbers or company details. Return JSON only.";
                 return Ok(review);
             }
             Err(problem) => {
-                last_problem = problem;
-                messages.push(OllamaChatMessage {
-                    role: "user".to_string(),
-                    content: format!(
-                        "That review was rejected: {}\n\nReturn corrected JSON.",
+                last_problem = if truncated {
+                    format!(
+                        "the reply was cut off before it finished ({}){}",
+                        problem,
+                        usage_note(&response)
+                    )
+                } else {
+                    problem
+                };
+                // A cut-off reply will be cut off again if the request stays the
+                // same size, so ask for the smallest valid review instead.
+                correction = Some(if truncated {
+                    "That reply ran out of room. Return compact JSON with exactly one strength, one weakness and one improvement, each a single short sentence, and no other keys.".to_string()
+                } else {
+                    format!(
+                        "That review was rejected: {}\n\nA review needs at least one strength, one weakness and one improvement. Return corrected JSON.",
                         last_problem
-                    ),
+                    )
                 });
             }
         }
@@ -658,9 +832,94 @@ pub async fn generate_recruiter_review(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_context, validate_draft, ReviewContext, ReviewDraft, ReviewEvidence};
+    use super::{
+        build_context, parse_review, prompt_caps, validate_draft, ReviewContext, ReviewDraft,
+        ReviewEvidence, BYTES_PER_TOKEN,
+    };
     use crate::claims::Claim;
     use std::collections::HashSet;
+
+    #[test]
+    fn the_review_schema_requires_every_section() {
+        let schema: serde_json::Value =
+            serde_json::from_str(super::REVIEW_SCHEMA).expect("the schema is valid JSON");
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .expect("the schema lists required keys")
+            .iter()
+            .map(|key| key.as_str().expect("required keys are strings"))
+            .collect();
+
+        for key in ["verdict", "strengths", "weaknesses", "improvements"] {
+            assert!(required.contains(&key), "schema does not require {}", key);
+            if key != "verdict" {
+                assert_eq!(
+                    schema["properties"][key]["minItems"], 2,
+                    "{} must not be optional or empty",
+                    key
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_cut_off_reply_reports_where_its_tokens_went() {
+        let response = crate::ollama::OllamaChatResponse {
+            model: "m".to_string(),
+            created_at: String::new(),
+            message: crate::ollama::OllamaChatMessage {
+                role: "assistant".to_string(),
+                content: String::new(),
+            },
+            done: true,
+            done_reason: Some("length".to_string()),
+            prompt_eval_count: Some(7_400),
+            eval_count: Some(2_600),
+        };
+
+        let note = super::usage_note(&response);
+        assert!(note.contains("stopped: length"), "{}", note);
+        assert!(note.contains("prompt 7400 tokens"), "{}", note);
+        assert!(note.contains("reply 2600 tokens"), "{}", note);
+    }
+
+    #[test]
+    fn the_prompt_leaves_the_reply_room_in_the_window() {
+        for num_ctx in [8_192u32, 16_384, 24_576] {
+            let (jd, doc) = prompt_caps(num_ctx);
+            let prompt_tokens = (jd + doc * 2) as u32 / BYTES_PER_TOKEN as u32;
+            assert!(
+                prompt_tokens < num_ctx * 3 / 4,
+                "{} prompt tokens fills a {} token window",
+                prompt_tokens,
+                num_ctx
+            );
+            assert!(
+                num_ctx - prompt_tokens >= 1_500,
+                "{} tokens of reply room in a {} token window",
+                num_ctx - prompt_tokens,
+                num_ctx
+            );
+        }
+    }
+
+    #[test]
+    fn a_reply_cut_off_mid_review_is_parsed_and_marked_truncated() {
+        let content = r#"{"verdict":"maybe","strengths":[{"text":"Strong systems background, matching the integration work in the posting","evidence":["claim:a"]}],"weaknesses":[{"text":"No printable ev"#;
+        let parsed = parse_review(content).expect("a truncated reply should be salvaged");
+        assert!(parsed.truncated);
+        assert_eq!(parsed.draft.verdict, "maybe");
+        assert_eq!(parsed.draft.strengths.len(), 1);
+        assert!(parsed.draft.weaknesses.is_empty());
+    }
+
+    #[test]
+    fn a_complete_reply_is_not_marked_truncated() {
+        let content = r#"{"verdict":"maybe","strengths":[{"text":"One strength worth naming here","evidence":["claim:a"]}],"weaknesses":[{"text":"One weakness worth naming here","evidence":["claim:b"]}],"improvements":[{"text":"Name the gap in the letter","target":"gap:g1"}]}"#;
+        let parsed = parse_review(content).expect("valid JSON should parse");
+        assert!(!parsed.truncated);
+        assert_eq!(parsed.draft.weaknesses.len(), 1);
+    }
 
     fn claim(id: &str, wording: &str) -> Claim {
         Claim {

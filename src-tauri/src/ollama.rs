@@ -65,7 +65,14 @@ pub struct OllamaChatRequest {
     pub model: String,
     pub messages: Vec<OllamaChatMessage>,
     pub stream: Option<bool>,
-    pub format: Option<String>,
+    /// Either the string `json` or a JSON Schema object. A schema also constrains
+    /// which keys must appear, so a reply cannot legally stop after its first
+    /// array the way `json` alone allows.
+    pub format: Option<serde_json::Value>,
+    /// Top-level chat field, not an option. `Some(false)` keeps a thinking model
+    /// from spending the token budget on reasoning it never shows the caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub think: Option<bool>,
     pub options: Option<serde_json::Value>,
 }
 
@@ -75,6 +82,14 @@ pub struct OllamaChatResponse {
     pub created_at: String,
     pub message: OllamaChatMessage,
     pub done: bool,
+    /// Why generation ended: `stop` for a natural finish, `length` when the
+    /// token budget ran out.
+    pub done_reason: Option<String>,
+    /// Tokens spent reading the prompt; at or above the window, the prompt was
+    /// trimmed rather than answered in full.
+    pub prompt_eval_count: Option<u32>,
+    /// Tokens spent generating, reasoning included.
+    pub eval_count: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,11 +245,22 @@ pub fn chat_with_ollama_ctx(
 ) -> Result<OllamaChatResponse, String> {
     let options = request_options(temperature, max_tokens, num_ctx);
 
+    // A JSON-contract call needs the answer, not a monologue. Reasoning tokens
+    // count against `num_predict` and never reach this function, which is how a
+    // review ends up cut off after its first array. Ollama ignores `think` on
+    // models that do not support it.
+    let format = format.map(|format| match serde_json::from_str::<serde_json::Value>(&format) {
+        Ok(value) if value.is_object() => value,
+        _ => serde_json::Value::String(format),
+    });
+    let think = if format.is_some() { Some(false) } else { None };
+
     let request = OllamaChatRequest {
         model: model.clone(),
         messages: messages.clone(),
         stream: Some(false),
         format: format.clone(),
+        think,
         options: Some(options.clone()),
     };
 

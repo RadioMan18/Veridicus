@@ -26,6 +26,7 @@ import Dialog from './Dialog';
 import ShortcutSheet from './ShortcutSheet';
 import Toaster from './Toaster';
 import TrustStatus from './TrustStatus';
+import { primeCompletionAudio } from '../lib/completionSound';
 
 interface SetupWizardState {
   completed: boolean;
@@ -89,6 +90,18 @@ export default function AppShell() {
   const [initializationFailed, setInitializationFailed] = useState(false);
   const initializationPromise = useRef<Promise<void> | null>(null);
   const chordPending = useRef(false);
+
+  // Browsers keep Web Audio suspended until a user gesture. Unlock it once so a
+  // chime at the end of a long run is allowed to play.
+  useEffect(() => {
+    const prime = () => primeCompletionAudio();
+    window.addEventListener('pointerdown', prime, { once: true });
+    window.addEventListener('keydown', prime, { once: true });
+    return () => {
+      window.removeEventListener('pointerdown', prime);
+      window.removeEventListener('keydown', prime);
+    };
+  }, []);
 
   const openCommandPalette = (cmd: string = '') => {
     setInitialCommand(cmd);

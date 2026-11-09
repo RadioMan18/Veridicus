@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { CornerDownLeft } from 'lucide-react';
 import ApplyTimeline, { initialStageStates, type StageState } from './ApplyTimeline';
+import { withCompletionChime } from '../lib/completionSound';
 import Markdown from './Markdown';
 import MockSessionPanel, {
   weakestTurns,
@@ -106,9 +107,9 @@ const COMMANDS: PaletteCommand[] = [
   },
   {
     id: '/followup',
-    description: 'Draft follow-up emails for stale applications',
-    hint: 'no arguments',
-    example: '/followup',
+    description: 'Pick who to follow up with, then draft one email',
+    hint: 'a number from the list, a company, or a day window',
+    example: '/followup 2',
     takesArgument: false,
   },
   {
@@ -302,15 +303,23 @@ export default function CommandPalette({
     }
 
     try {
-      const result: any = await invoke('execute_apply_workflow', {
-        input: {
-          jd_url: url,
-          employer: null,
-          role: null,
-          req_id: null,
-          defer_commit: true,
+      const result: any = await withCompletionChime(
+        () =>
+          invoke('execute_apply_workflow', {
+            input: {
+              jd_url: url,
+              employer: null,
+              role: null,
+              req_id: null,
+              defer_commit: true,
+            },
+          }),
+        {
+          label: 'Apply workflow',
+          failed: (value: any) => !value?.success,
+          cancelled: (value: any) => /cancelled by user/i.test(String(value?.error_message ?? '')),
         },
-      });
+      );
       if (result.success) {
         onHistory({
           kind: 'success',
@@ -347,12 +356,15 @@ export default function CommandPalette({
 
     setMockBusy(true);
     try {
-      const plan: MockPlan = await invoke('plan_mock_interview', {
-        role,
-        applicationId: null,
-        mode: simulation ? 'simulation' : 'coaching',
-        questionCount: null,
-      });
+      const plan: MockPlan = await withCompletionChime(() =>
+        invoke('plan_mock_interview', {
+          role,
+          applicationId: null,
+          mode: simulation ? 'simulation' : 'coaching',
+          questionCount: null,
+        }),
+        { label: 'Mock interview plan' },
+      );
       mockPausedHintRef.current = false;
       setMockSession({
         plan,
@@ -378,17 +390,22 @@ export default function CommandPalette({
   const finishMock = async (plan: MockPlan, transcript: MockTurn[]) => {
     setMockBusy(true);
     try {
-      const report: string = await invoke('finish_mock_interview', {
-        role: plan.role,
-        mode: plan.mode,
-        turns: transcript.map((turn) => ({
-          question: turn.question,
-          group: turn.group,
-          answer: turn.answer,
-          followUpAnswer: turn.followUpAnswer,
-          skipped: turn.skipped,
-        })),
-      });
+      // A session is long by design, so its end is the signal: no duration floor.
+      const report: string = await withCompletionChime(
+        () =>
+          invoke('finish_mock_interview', {
+            role: plan.role,
+            mode: plan.mode,
+            turns: transcript.map((turn) => ({
+              question: turn.question,
+              group: turn.group,
+              answer: turn.answer,
+              followUpAnswer: turn.followUpAnswer,
+              skipped: turn.skipped,
+            })),
+          }),
+        { minDurationMs: 0, label: 'Mock interview debrief' },
+      );
       // The panel is the debrief while the session is open; it moves into the
       // palette output when the session is closed, so it appears once.
       setMockSession((previous) =>
@@ -740,7 +757,10 @@ export default function CommandPalette({
       setRunning(true);
 
       if (known.id === '/prep') {
-        const briefing: string = await invoke('run_company_research', { company: argument });
+        const briefing: string = await withCompletionChime(
+          () => invoke<string>('run_company_research', { company: argument }),
+          { label: 'Company briefing' },
+        );
         onShowBriefing?.(briefing, argument);
         onHistory({ kind: 'success', text: `Briefing ready for ${argument}.` });
         onClose();
@@ -760,11 +780,16 @@ export default function CommandPalette({
           onHistory({ kind: 'error', text: 'No applications yet. Run /apply first.' });
           return;
         }
-        await invoke('generate_interview_prep', { applicationId: latest.id });
-        const markdown: string = await invoke('get_interview_prep_markdown', {
-          applicationId: latest.id,
-        });
-        const [questions, stories] = markdown.split('## STAR bank');
+        const [questions, stories] = await withCompletionChime(
+          async () => {
+            await invoke('generate_interview_prep', { applicationId: latest.id });
+            const markdown: string = await invoke('get_interview_prep_markdown', {
+              applicationId: latest.id,
+            });
+            return markdown.split('## STAR bank');
+          },
+          { label: 'Interview prep' },
+        );
         onHistory({
           kind: 'success',
           text:
@@ -788,11 +813,15 @@ export default function CommandPalette({
           onHistory({ kind: 'error', text: 'No resume bullets found. Import a resume first.' });
           return;
         }
-        const report: any = await invoke('review_bullets', {
-          applicationId: null,
-          bullets,
-          jdText: null,
-        });
+        const report: any = await withCompletionChime(
+          () =>
+            invoke('review_bullets', {
+              applicationId: null,
+              bullets,
+              jdText: null,
+            }),
+          { label: 'Bullet review' },
+        );
         const lines: string[] = (report.bullets || []).map((bullet: any) => {
           const head = `**${bullet.status === 'rewritten' ? 'Rewritten' : bullet.status === 'blocked' ? 'Blocked' : 'Needs your input'}** — ${bullet.original}`;
           const body = bullet.rewrite ? `\n→ ${bullet.rewrite}` : `\n→ ${bullet.problem || 'no rewrite'}`;
@@ -804,25 +833,107 @@ export default function CommandPalette({
       }
 
       if (known.id === '/review') {
-        const review: any = await invoke('generate_recruiter_review', { applicationId: null });
+        const review: any = await withCompletionChime(
+          () => invoke('generate_recruiter_review', { applicationId: null }),
+          { label: 'Recruiter review' },
+        );
         onHistory({ kind: 'success', text: review.markdown });
         return;
       }
 
       if (known.id === '/pack') {
-        const pack: any = await invoke('generate_application_pack', { applicationId: null });
+        const pack: any = await withCompletionChime(
+          () => invoke('generate_application_pack', { applicationId: null }),
+          { label: 'Application pack' },
+        );
         onHistory({ kind: 'success', text: pack.markdown });
         return;
       }
 
       if (known.id === '/followup') {
-        const drafts: string = await invoke('draft_followups');
-        onHistory({ kind: 'success', text: drafts });
+        type Candidate = {
+          id: string;
+          employer: string;
+          role: string;
+          date: string;
+          days_ago: number | null;
+        };
+        type CandidateList = { days: number; candidates: Candidate[]; note: string | null };
+
+        const numeric = /^\d+$/.test(argument);
+        const index = numeric ? Number.parseInt(argument, 10) : null;
+
+        // A number inside the current list selects that application.
+        if (index !== null && index > 0) {
+          const listed = await invoke<CandidateList>('list_followup_candidates', { days: null });
+          if (index <= listed.candidates.length) {
+            const picked = listed.candidates[index - 1];
+            const drafts: string = await withCompletionChime(
+              () =>
+                invoke('draft_followups', {
+                  applicationId: picked.id,
+                  days: null,
+                }),
+              { label: 'Follow-up drafts' },
+            );
+            onHistory({ kind: 'success', text: drafts });
+            return;
+          }
+        }
+
+        // A company name drafts the matching application from a wider window.
+        if (argument && !numeric) {
+          const wide = await invoke<CandidateList>('list_followup_candidates', { days: 90 });
+          const needle = argument.toLowerCase();
+          const match =
+            wide.candidates.find((candidate) => candidate.employer.toLowerCase().includes(needle)) ??
+            wide.candidates.find((candidate) => candidate.role.toLowerCase().includes(needle));
+          if (!match) {
+            onHistory({
+              kind: 'error',
+              text: `No submitted or interviewing application matches "${argument}" in the last 90 days.`,
+            });
+            return;
+          }
+          const drafts: string = await withCompletionChime(
+            () =>
+              invoke('draft_followups', {
+                applicationId: match.id,
+                days: null,
+              }),
+            { label: 'Follow-up drafts' },
+          );
+          onHistory({ kind: 'success', text: drafts });
+          return;
+        }
+
+        const window = index !== null && index > 0 ? index : null;
+        const result = await invoke<CandidateList>('list_followup_candidates', { days: window });
+        if (result.candidates.length === 0) {
+          onHistory({
+            kind: 'info',
+            text:
+              result.note ??
+              `No application applied in the last ${result.days} days is waiting on a follow-up.`,
+          });
+          return;
+        }
+        const lines = result.candidates.map(
+          (candidate, position) =>
+            `${position + 1}. **${candidate.employer}** — ${candidate.role} · applied ${candidate.days_ago ?? '?'} day(s) ago (${candidate.date})`,
+        );
+        onHistory({
+          kind: 'success',
+          text: `## Who to follow up with\n\n_Submitted or interviewing, applied in the last ${result.days} days._\n\n${lines.join('\n')}\n\nDraft one with \`/followup <number>\`, name the company with \`/followup Acme\`, or widen the window with \`/followup 45\`.`,
+        });
         return;
       }
 
       if (known.id === '/weekly') {
-        const report: string = await invoke('generate_weekly_report');
+        const report: string = await withCompletionChime(
+          () => invoke<string>('generate_weekly_report'),
+          { label: 'Weekly report' },
+        );
         onHistory({ kind: 'success', text: report });
         return;
       }

@@ -1,55 +1,208 @@
-﻿# CareerOS
+# CareerOS
 
-Privacy-first job search OS with honesty guardrails. CareerOS is a Tauri 2 desktop application (Rust + React + TypeScript) that helps you manage job applications while enforcing strict \"honesty guardrails\" - only using verified claims from your resume in generated materials.
+Privacy-first job search OS with honesty guardrails. CareerOS is a Tauri 2 desktop application (Rust + React + TypeScript) that runs the whole application workflow — scrape a posting, tailor a resume and cover letter, compile PDFs, practice the interview, follow up — while only ever stating facts the candidate has verified.
+
+Every generated sentence is grounded in a **Claims Ledger** of confirmed facts; a model that invents, pads or contradicts the ledger is rejected and retried rather than shipped. All inference is local through Ollama, so resumes and job descriptions never leave the machine.
 
 ## Features
 
-- **Honesty Guardrails**: SQLCipher-encrypted Claims Ledger ensures only confirmed facts from your resume are used in generated documents
-- **Local AI**: Uses Ollama for local LLM inference (no data sent to external services)
-- **Resume Management**: Import resumes (PDF, DOCX, ODT, TXT, MD) and automatically extract claims
-- **Job Application Workflow**: Full /apply pipeline - scrape job descriptions, analyze gaps, tailor resume and cover letter, fact-check, compile PDFs
-- **ATS Optimization**: Generate ATS-friendly resumes in multiple formats (PDF, DOCX, ODT)
-- **Application Tracking**: Built-in ledger to track all applications
-- **Interview Prep**: Company research and STAR-method interview simulator
-- **Git Integration**: Automatic version control of your job search materials
+### Honesty guardrails
 
-## Tech Stack
+- **Claims Ledger** — confirmed facts with evidence, stored in a SQLCipher-encrypted SQLite database. Generated documents may only use what is in the ledger.
+- **Gap analysis** — every posting against your ledger, with per-gap status so you can decide what is genuinely missing instead of inflating a bullet.
+- **Grounding checks** — a document that cites a claim you have not confirmed, echoes the prompt, or leaves a `[fill in]` marker is sent back once and then refused.
+- **Required gaps in letters** — a cover letter must name the requirement it does not meet, with the adjacent strength, instead of implying experience you lack.
+- **Audit record** — every block, override and advisory finding is recorded. `/honesty-stats` summarises them; the incident log can be exported for review.
+- **AI disclosure tracking** — explicit acknowledgement of where AI produced text.
 
-- **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS
-- **Backend**: Rust + Tauri 2
-- **Database**: SQLite with SQLCipher encryption
-- **AI**: Ollama (local LLM)
-- **PDF Generation**: Typst
-- **PDF Processing**: Poppler (pdftoppm, pdftotext)
+### Apply workflow
+
+`/apply <url>` runs a staged, cancellable pipeline:
+
+1. Scrape the posting (plain HTTP fetch with a JSON-LD fallback for Workday-style pages).
+2. Gap analysis and a job-description brief against your ledger.
+3. Tailor the resume from verified claims.
+4. Write the cover letter, then add letterhead, reference line, salutation and signature deterministically.
+5. Fact-check pass, then Typst PDF compile and visual QA on the rasterised pages.
+6. Write the application to the ledger and commit the artifacts to Git in the workspace.
+
+Each stage emits progress and can be cancelled; artifacts are previewed in the app before you commit them to the ledger. An optional chime marks runs that finish after eight seconds in the background — a lower tone for failures, nothing for cancelled or short runs — controlled by `Settings → Completion sound` (Off, Background, Always). The same runs can raise a Windows toast from `Settings → Desktop notifications`; its copy names only the operation, never an employer or document text, because toasts persist in the Action Center.
+
+### Documents
+
+- **Tailored resume** — written in your own resume voice (bold capitals headline, professional summary, grouped competencies, labelled bullets), and its structure is validated, not just prose: each role keeps the employer, title and date range from your base resume, and Education may only contain degrees, credentials and institutions. A resume that loses its dates or files a role under Education is repaired deterministically (dates copied back from the base resume, the duplicate removed from Education) instead of failing the apply.
+- **Cover letter** — five paragraphs and 350–480 words, ending with a paragraph that names each required gap plainly. The model writes the body; CareerOS composes the letterhead, `Re:` line, salutation and signature so the letter is a letter and the sign-off never collapses into one line.
+- **Prompt templates you can edit** — plain Markdown in `Documents/CareerOS/.careeros/skills/`, one file per skill, where the body is the whole system prompt. Shipped templates carry a version; on upgrade the old file is kept as `<skill>.md.v<old>.bak`.
+- **Outputs** — Typst PDF, plus ATS-oriented DOCX and ODT export of the master resume.
+
+### Interview practice
+
+- `/prep <company>` — research briefing: overview, recent activity, culture, likely questions, talking points.
+- `/mock <role>` — a session, not a prompt: one question at a time from the grounded question bank, scored on relevance, structure, specificity and impact.
+- `--simulation` withholds feedback until the end, the way a real interview runs.
+- `/skip`, `/retry`, `/end`; Esc pauses and Ctrl+K resumes.
+- Debrief lists every question with its score, the fixes worth making first, and delivery facts measured from your own answers (length, hedging, STAR coverage, use of numbers).
+- **Drill mode** — replays up to three of your lowest-scoring questions, weakest first, until each answer beats its previous best.
+- `/questions` and `/stories` expose the question bank and STAR story bank directly.
+
+### Tracking and review
+
+- `/fit` — role-fit matrix of strengths, gaps and keyword coverage.
+- `/review` — recruiter-style verdict on the latest application, which may not introduce a number you have not stated.
+- `/pack` — assemble the application pack from existing artifacts.
+- `/followup` — who to chase, then one draft email.
+- `/weekly`, `/logs` — activity counts and daily log analysis.
+- Application Ledger in the UI for status changes, plus artifact folders per application.
+
+## Command reference
+
+Open the palette with `Ctrl+K` / `Cmd+K`.
+
+| Command | Argument | What it does |
+| --- | --- | --- |
+| `/apply` | job posting URL | Scrape, analyse, tailor resume and letter, fact-check, compile, commit |
+| `/prep` | company name | Company research briefing for an interview |
+| `/fit` | — | Role-fit matrix: strengths, gaps, keyword coverage |
+| `/questions` | — | Question bank for the latest application |
+| `/stories` | — | STAR story bank with per-theme status |
+| `/bullets` | — | Strengthen resume bullets, flag missing metrics |
+| `/review` | — | Recruiter-style verdict on the latest application |
+| `/pack` | — | Assemble the application pack from existing artifacts |
+| `/mock` | role, optionally `--simulation` | One-question-at-a-time practice with a debrief |
+| `/resume` | optional file path | Import a resume and extract claims into the ledger |
+| `/export` | `pdf` \| `docx` \| `odt` | Export the master resume |
+| `/followup` | number, company, or day window | List who to chase, or draft one email |
+| `/weekly` | — | Application counts by status |
+| `/honesty-stats` | — | Counts of blocks, overrides and advisory findings |
+| `/logs` | — | Daily log and application activity analysis |
+
+`/followup` details: `/followup` lists applications marked SUBMITTED or INTERVIEWING applied to in the last 21 days, newest first. `/followup 2` drafts the second, `/followup Acme` finds that company across 90 days, `/followup 45` widens the window. When nothing is in the window it says so and names the most recent application with its age instead of returning an empty list.
+
+During a mock session: `/skip`, `/retry`, `/end`.
+
+## Tech stack
+
+| Layer | Choice |
+| --- | --- |
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS |
+| Backend | Rust, Tauri 2 |
+| Database | SQLite with SQLCipher (`rusqlite`, bundled) |
+| AI | Ollama, local models (a fast model for small tasks, a deep model for documents) |
+| PDF | Typst sidecar, with Poppler (`pdftoppm`, `pdftotext`) for rasterising and QA |
+| Version control | `git2`, committing workspace artifacts per application |
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18+)
+- [Node.js](https://nodejs.org/) 18+
 - [Rust](https://rustup.rs/) (latest stable)
-- [Ollama](https://ollama.ai/) installed and running
-- At least one Ollama model pulled (e.g., llama3.2:latest)
+- [Ollama](https://ollama.ai/) running locally, with at least one model pulled (for example `ollama pull llama3.2:latest`)
+- The Typst and Poppler sidecar binaries available to the app
 
-## Installation
+## Running
 
-1. Clone the repository
-2. Install dependencies: `npm install`
-3. Pull an Ollama model: ollama pull llama3.2:latest
-4. Run in development: `npm run tauri dev`
-5. Build for production: `npm run tauri build`
+```bash
+npm install
+ollama pull llama3.2:latest
+npm run tauri dev
+```
 
-## Getting Started
+`npm run tauri dev` builds the Rust side and opens the app. It relies on the `default-run = "careeros"` key in `src-tauri/Cargo.toml`, because the package also contains the `smoke_apply` harness binary behind the off-by-default `smoke-harness` feature. That harness is run explicitly:
 
-1. Launch CareerOS
-2. Complete the setup wizard (profile, resume import, claims verification, model selection)
-3. Use the command palette (Cmd+K / Ctrl+K) to run slash commands
-4. Start applying to jobs with /apply <url>
+```bash
+cd src-tauri && cargo run --features smoke-harness --bin smoke_apply
+```
 
-## Security
+Frontend only (no desktop shell):
 
-- All data stored locally in ~/Documents/CareerOS/
-- SQLCipher encryption for the Claims Ledger
-- No external API calls by default (only local Ollama)
-- Strict guardrails prevent hallucination of unverified claims
+```bash
+npm run dev
+```
+
+Production build:
+
+```bash
+npm run tauri build
+```
+
+## Developing
+
+```bash
+cd src-tauri && cargo test --bin careeros   # 155 unit tests
+npm test                                    # Vitest: pure frontend modules (3.2s, no DOM)
+npx tsc --noEmit                            # type check the frontend
+npm run build                               # rebuild dist/ for the bundled UI
+```
+
+`npm test` runs the colocated `src/**/*.test.ts` suites with Vitest in a Node environment, so it covers policy and formatting modules such as the completion-chime rules rather than components. Anything that needs the Tauri bridge or a browser is not covered and is checked by hand in the running app.
+
+If the app looks unchanged after a frontend edit, the bundled `dist/` is stale — `npm run build` refreshes it, and `npm run tauri dev` serves Vite directly so it is not needed there.
+
+### Layout
+
+```
+src/                     React UI (command palette, ledger, previews, settings)
+src-tauri/src/
+  orchestrator.rs        apply workflow, follow-ups, reports, previews
+  skills.rs              prompt templates, validators, document composition
+  guardrails.rs          claims, gaps, gap status
+  fact_check.rs          post-generation fact checking
+  mock_interview.rs      interview sessions, scoring, debrief, drill
+  typst_engine.rs        Markdown → Typst → PDF, rasterising, visual QA
+  scraper.rs             job posting extraction (HTML + JSON-LD)
+  recruiter_review.rs    recruiter verdicts with number discipline
+  pack.rs                application pack assembly
+  db.rs, workspace.rs    schema, SQLCipher database, workspace files
+  resume_exporter.rs     DOCX/ODT export
+```
+
+## Where your data lives
+
+Everything is under `Documents/CareerOS/`:
+
+- `careeros.db` — the encrypted ledger and settings
+- `applications.csv` — a plain-text mirror of the application ledger
+- `.careeros/skills/` — editable prompt templates, with `.bak` copies of upgraded versions
+- per-application folders — generated Markdown, PDFs and a Git history of the workspace
+
+## Privacy
+
+- Inference runs locally through Ollama; documents are never sent to a hosted model.
+- The ledger is encrypted at rest with SQLCipher.
+- The only outbound requests are the job posting URLs you explicitly ask CareerOS to read, and Ollama on localhost.
+
+## Compliance and standards evidence
+
+CareerOS records enough about each run that the honesty guardrails can be examined rather than taken on trust. The design is informed by **NIST AI RMF 1.0** and its Generative AI Profile (**NIST AI 600-1**), and by **ISO/IEC 42001:2023**, with ISO/IEC 23894 and ISO/IEC 42005 as guidance.
+
+This is **alignment evidence, not certification**. NIST AI RMF is voluntary, and ISO/IEC 42001 certifies an organization's AI management system rather than an application. The policy, RACI, objectives, impact assessment and Statement of Applicability are drafts awaiting signature, and no internal audit or management review has been performed.
+
+What operates today:
+
+- **Per-application audit record** — an append-only `audit/events.jsonl` holding the model name and digest, template version, rule ids and rule-set SHA-256, SHA-256 and size of each document, findings, the blocking verdict, the disclosure acknowledgement and any written override.
+- **Commit gate** — approval re-reads the rendered files, re-runs the deterministic checks against the current rules and claims, and writes a separate commit-time report.
+- **Adversarial evaluation** — fixtures for fabricated metrics, dropped qualifiers, scope escalation, never-claims, omitted gaps, ungrounded bullets, employer mismatch and prompt injection, run by `cargo test`.
+- **Monitoring and review** — `/honesty-stats`, the Settings honesty record, and a dated review cadence.
+- **Disclosure and recourse** — first-run and per-application AI-assisted disclosure; an output problem becomes an incident with an id and status, exportable as CSV.
+- **Provenance** — claims carry an evidence type, reference, SHA-256 fingerprint, verifier and confirmation time.
+
+| Document | What it covers |
+| --- | --- |
+| [COMPLIANCE-EVIDENCE.md](docs/COMPLIANCE-EVIDENCE.md) | Index mapping selected controls to the artifact or code path that evidences them |
+| [STATEMENT-OF-APPLICABILITY.md](docs/STATEMENT-OF-APPLICABILITY.md) | All 38 Annex A controls: 35 selected, 3 excluded with reasons, plus clause-level evidence |
+| [GUARDRAIL-METHOD.md](docs/GUARDRAIL-METHOD.md) | The deterministic checks, the advisory scope pass, the commit gate and the audit record |
+| [AI-SYSTEM-CARD.md](docs/AI-SYSTEM-CARD.md) | Purpose, behaviour, data, limits and disclosure |
+| [AI-POLICY.md](docs/AI-POLICY.md) | Intended and prohibited use, human oversight, review triggers |
+| [AI-IMPACT-ASSESSMENT.md](docs/AI-IMPACT-ASSESSMENT.md) | Affected groups, impacts and treatments |
+| [INTERNAL-AUDIT.md](docs/INTERNAL-AUDIT.md) and [audit/](docs/audit/README.md) | Audit programme, workpapers and evidence requests — procedures that have not yet been operated |
+| [OPERATOR-ADOPTION-CHECKLIST.md](docs/OPERATOR-ADOPTION-CHECKLIST.md) | The role, contact, review and signature record an operator must complete before claiming a running management system |
+
+The limitations are part of the record: it is local and unsigned, rule changes are detectable only by hash, the advisory model pass can miss paraphrased scope inflation, and no honesty objective has a measured baseline yet.
+
+## Limitations
+
+- A posting that requires JavaScript rendering will scrape partially; JSON-LD coverage helps but does not replace a real browser.
+- Generated prose is only as good as the ledger — a thin ledger produces a thin resume, by design.
+- Non-Latin scripts and unusual resume layouts may need the Typst template adjusted.
 
 ## License
 

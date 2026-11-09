@@ -1,5 +1,12 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { readChimeMode, writeChimeMode, type ChimeMode } from '../lib/completionSound';
+import {
+  ensureNotificationPermission,
+  isTauriRuntime,
+  readNotifyEnabled,
+  writeNotifyEnabled,
+} from '../lib/desktopNotify';
 
 interface SettingsViewProps {
   workspacePath: string;
@@ -45,6 +52,9 @@ export default function SettingsView({
   const [reviewNote, setReviewNote] = useState('');
   const [recording, setRecording] = useState(false);
   const [reviewMessage, setReviewMessage] = useState('');
+  const [chimeMode, setChimeMode] = useState<ChimeMode>(readChimeMode);
+  const [notifyEnabled, setNotifyEnabled] = useState<boolean>(readNotifyEnabled);
+  const [notifyHint, setNotifyHint] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -79,6 +89,25 @@ export default function SettingsView({
     } finally {
       setRecording(false);
     }
+  };
+
+  // Turning the toggle on is the consent step: ask once, here, never mid-run.
+  const changeNotify = async (enabled: boolean) => {
+    setNotifyEnabled(enabled);
+    writeNotifyEnabled(enabled);
+    setNotifyHint('');
+    if (!enabled) return;
+    if (!isTauriRuntime()) {
+      setNotifyHint('Desktop notifications need the installed app; this browser preview cannot show them.');
+      return;
+    }
+    const granted = await ensureNotificationPermission();
+    if (granted) return;
+    setNotifyEnabled(false);
+    writeNotifyEnabled(false);
+    setNotifyHint(
+      'Windows would not grant notifications. Turn CareerOS on under Settings → System → Notifications.',
+    );
   };
 
   const blocks = Object.entries(stats?.blocks_by_code || {});
@@ -136,6 +165,72 @@ export default function SettingsView({
               ? 'Local git history is active for your applications.'
               : 'No local git history yet.'}
           </p>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-aether-border bg-aether-surface p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-row text-aether-text">Completion sound</p>
+            <p className="text-meta text-aether-text-muted">
+              A short chime when a run takes longer than eight seconds. Failures use a lower tone;
+              cancelled runs stay silent.
+            </p>
+          </div>
+          <div className="flex overflow-hidden rounded border border-aether-border">
+            {([
+              ['off', 'Off'],
+              ['background', 'Background'],
+              ['always', 'Always'],
+            ] as [ChimeMode, string][]).map(([mode, label]) => (
+              <button
+                key={mode}
+                onClick={() => {
+                  setChimeMode(mode);
+                  writeChimeMode(mode);
+                }}
+                aria-pressed={chimeMode === mode}
+                className={`px-3 py-1.5 text-sm transition ${
+                  chimeMode === mode
+                    ? 'bg-aether-primary text-aether-primary-fg'
+                    : 'bg-aether-bg text-aether-text hover:border-aether-primary'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="mt-4 border-t border-aether-border pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-row text-aether-text">Desktop notifications</p>
+              <p className="text-meta text-aether-text-muted">
+                A Windows toast when a run finishes after eight seconds in the background. The copy
+                names only the operation — never an employer or document text.
+              </p>
+            </div>
+            <div className="flex overflow-hidden rounded border border-aether-border">
+              {([
+                [true, 'On'],
+                [false, 'Off'],
+              ] as [boolean, string][]).map(([enabled, label]) => (
+                <button
+                  key={label}
+                  onClick={() => void changeNotify(enabled)}
+                  aria-pressed={notifyEnabled === enabled}
+                  className={`px-3 py-1.5 text-sm transition ${
+                    notifyEnabled === enabled
+                      ? 'bg-aether-primary text-aether-primary-fg'
+                      : 'bg-aether-bg text-aether-text hover:border-aether-primary'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          {notifyHint && <p className="mt-2 text-meta text-aether-text-muted">{notifyHint}</p>}
         </div>
       </section>
 

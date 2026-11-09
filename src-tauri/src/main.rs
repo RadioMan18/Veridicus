@@ -61,6 +61,7 @@ pub fn main() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState::default())
         .invoke_handler(generate_handler![
             workspace::initialize_workspace,
@@ -145,6 +146,7 @@ pub fn main() {
             orchestrator::get_application_folder,
             orchestrator::run_company_research,
             orchestrator::draft_followups,
+            orchestrator::list_followup_candidates,
             orchestrator::generate_weekly_report,
             orchestrator::analyze_logs,
             orchestrator::get_application_records,

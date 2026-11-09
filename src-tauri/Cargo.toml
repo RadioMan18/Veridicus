@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "CareerOS Desktop — privacy-first job search OS with honesty guardrails"
 authors = ["CareerOS"]
 edition = "2021"
+# `tauri dev` runs `cargo run`; the smoke harness is a second binary, so name the app here.
+default-run = "careeros"
 
 [features]
 default = ["custom-protocol"]
@@ -48,3 +50,4 @@ tauri-plugin-dialog = "2.8.4"
 rfd = "0.17.2"
 zip = "0.6"
 tauri-plugin-fs = "2"
+tauri-plugin-notification = "2"

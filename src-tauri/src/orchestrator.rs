@@ -1207,8 +1207,144 @@ pub async fn run_company_research(company: String, state: State<'_, AppState>) -
 }
 
 /// Draft follow-up emails for stale applications (/followup command).
+pub const DEFAULT_FOLLOWUP_DAYS: u32 = 21;
+
+/// One application that could be followed up.
+#[derive(Debug, Clone, Serialize)]
+pub struct FollowupCandidate {
+    pub id: String,
+    pub employer: String,
+    pub role: String,
+    pub date: String,
+    pub days_ago: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FollowupCandidates {
+    pub days: u32,
+    pub candidates: Vec<FollowupCandidate>,
+    /// Set when the window holds nothing, so the caller can say why.
+    pub note: Option<String>,
+}
+
+fn parse_application_date(value: &str) -> Option<chrono::NaiveDate> {
+    let text = value.trim();
+    chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+        .ok()
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(text)
+                .ok()
+                .map(|stamp| stamp.date_naive())
+        })
+}
+
+fn followup_rows(conn: &rusqlite::Connection) -> Result<Vec<(String, String, String, String)>, String> {
+    let mut statement = conn
+        .prepare("SELECT id, employer, role, date FROM application_records WHERE status IN ('SUBMITTED', 'INTERVIEWING') ORDER BY date DESC")
+        .map_err(|error| format!("Failed to prepare query: {}", error))?;
+    let rows: Vec<(String, String, String, String)> = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to query apps: {}", error))?
+        .filter_map(|row| row.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Keep applications inside the window, newest first. An empty window says so and
+/// names the most recent application instead of returning a silent empty list.
+pub(crate) fn select_followup_candidates(
+    rows: Vec<(String, String, String, String)>,
+    days: u32,
+    today: chrono::NaiveDate,
+) -> FollowupCandidates {
+    let mut all: Vec<FollowupCandidate> = rows
+        .into_iter()
+        .map(|(id, employer, role, date)| {
+            let days_ago = parse_application_date(&date).map(|applied| (today - applied).num_days());
+            FollowupCandidate {
+                id,
+                employer,
+                role,
+                date,
+                days_ago,
+            }
+        })
+        .collect();
+    all.sort_by_key(|candidate| candidate.days_ago.unwrap_or(i64::MAX));
+
+    let candidates: Vec<FollowupCandidate> = all
+        .iter()
+        .filter(|candidate| candidate.days_ago.map_or(true, |ago| ago <= days as i64))
+        .cloned()
+        .collect();
+    if !candidates.is_empty() {
+        return FollowupCandidates {
+            days,
+            candidates,
+            note: None,
+        };
+    }
+
+    let note = match all
+        .iter()
+        .find_map(|candidate| candidate.days_ago.map(|ago| (candidate, ago)))
+    {
+        Some((candidate, ago)) => Some(format!(
+            "No application applied in the last {} days is waiting on a follow-up. The most recent is {} — {}, applied {} days ago. Run `/followup {}` to widen the window.",
+            days,
+            candidate.employer,
+            candidate.role,
+            ago,
+            (ago + 1).max(days as i64 + 1)
+        )),
+        None => Some(
+            "No application is marked SUBMITTED or INTERVIEWING yet. Set that status in the ledger, then run /followup again."
+                .to_string(),
+        ),
+    };
+
+    FollowupCandidates {
+        days,
+        candidates: Vec::new(),
+        note,
+    }
+}
+
+/// List who could be followed up, without spending a model call.
 #[tauri::command]
-pub async fn draft_followups(state: State<'_, AppState>) -> Result<String, String> {
+pub fn list_followup_candidates(
+    days: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<FollowupCandidates, String> {
+    let db_path = {
+        let guard = state.db_path.lock().unwrap();
+        guard
+            .as_ref()
+            .ok_or("Database not initialized")?
+            .clone()
+    };
+    let conn = get_db_connection(&db_path)?;
+    let rows = followup_rows(&conn)?;
+    Ok(select_followup_candidates(
+        rows,
+        days.unwrap_or(DEFAULT_FOLLOWUP_DAYS),
+        chrono::Local::now().date_naive(),
+    ))
+}
+
+#[tauri::command]
+pub async fn draft_followups(
+    application_id: Option<String>,
+    days: Option<u32>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let db_path_str = {
         let db_path_opt = state.db_path.lock().unwrap();
         db_path_opt.as_ref()
@@ -1217,28 +1353,40 @@ pub async fn draft_followups(state: State<'_, AppState>) -> Result<String, Strin
     };
     let conn = get_db_connection(&db_path_str)?;
 
-    // Get applications that are SUBMITTED or INTERVIEWING without recent follow-up
-    let apps: Vec<(String, String, String, String)> = {
-        // Scoped so the statement is dropped before the model calls below: a
-        // `Statement` cannot be held across an await in an async command.
-        let mut stmt = conn.prepare("SELECT id, employer, role, date FROM application_records WHERE status IN ('SUBMITTED', 'INTERVIEWING')")
-            .map_err(|e| format!("Failed to prepare query: {}", e))?;
-        let rows: Vec<(String, String, String, String)> = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        }).map_err(|e| format!("Failed to query apps: {}", e))?
-        .filter_map(|r| r.ok())
-        .collect();
-        rows
+    // Every application still waiting on a reply, newest first.
+    let rows = followup_rows(&conn)?;
+    let (apps, header) = match application_id.as_deref() {
+        Some(id) => {
+            let found = rows
+                .into_iter()
+                .find(|(row_id, _, _, _)| row_id == id)
+                .ok_or_else(|| format!("Application not found: {}", id))?;
+            let header = format!("## Follow-up — {}, {}\n\n", found.1, found.2);
+            (vec![found], header)
+        }
+        None => {
+            let selection = select_followup_candidates(
+                rows,
+                days.unwrap_or(DEFAULT_FOLLOWUP_DAYS),
+                chrono::Local::now().date_naive(),
+            );
+            if selection.candidates.is_empty() {
+                return Ok(selection
+                    .note
+                    .unwrap_or_else(|| "No applications awaiting follow-up.".to_string()));
+            }
+            let header = format!(
+                "## Follow-up drafts\n\n_Submitted or interviewing, applied in the last {} days._\n\n",
+                selection.days
+            );
+            let apps = selection
+                .candidates
+                .into_iter()
+                .map(|candidate| (candidate.id, candidate.employer, candidate.role, candidate.date))
+                .collect::<Vec<_>>();
+            (apps, header)
+        }
     };
-
-    if apps.is_empty() {
-        return Ok("No applications awaiting follow-up. Mark an application as SUBMITTED or INTERVIEWING in the ledger first.".to_string());
-    }
 
     let config = crate::ollama::get_ollama_config(state).unwrap_or_default();
     let model = config.fast_model.clone()
@@ -1246,7 +1394,7 @@ pub async fn draft_followups(state: State<'_, AppState>) -> Result<String, Strin
         .unwrap_or_else(|| "llama3.2:latest".to_string());
 
     const MAX_DRAFTS: usize = 10;
-    let mut drafts = String::from("## Follow-up Drafts\n\n");
+    let mut drafts = header;
     let mut drafted = 0usize;
 
     for (_, employer, role, date) in apps.iter().take(MAX_DRAFTS) {
@@ -1896,4 +2044,46 @@ pub async fn check_ats_compliance(
         &markdown,
         jd_text.as_deref(),
     ))
+}
+#[cfg(test)]
+mod followup_tests {
+    use super::select_followup_candidates;
+
+    fn row(id: &str, employer: &str, date: &str) -> (String, String, String, String) {
+        (
+            id.to_string(),
+            employer.to_string(),
+            "Learning Lead".to_string(),
+            date.to_string(),
+        )
+    }
+
+    #[test]
+    fn the_window_keeps_recent_applications_and_orders_them_newest_first() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+        let selection = select_followup_candidates(
+            vec![row("a", "Old", "2026-09-01"), row("b", "Recent", "2026-11-05")],
+            21,
+            today,
+        );
+        assert_eq!(selection.days, 21);
+        let employers: Vec<&str> = selection
+            .candidates
+            .iter()
+            .map(|candidate| candidate.employer.as_str())
+            .collect();
+        assert_eq!(employers, vec!["Recent"]);
+        assert_eq!(selection.candidates[0].days_ago, Some(3));
+    }
+
+    #[test]
+    fn an_empty_window_names_the_most_recent_application() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+        let selection = select_followup_candidates(vec![row("a", "Old", "2026-10-05")], 21, today);
+        assert!(selection.candidates.is_empty());
+        let note = selection.note.expect("note");
+        assert!(note.contains("Old"), "{note}");
+        assert!(note.contains("34 days"), "{note}");
+        assert!(note.contains("/followup"), "{note}");
+    }
 }
