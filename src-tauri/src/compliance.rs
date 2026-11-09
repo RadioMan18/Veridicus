@@ -38,6 +38,28 @@ pub struct DocumentDigest {
     pub bytes: usize,
 }
 
+/// One model call behind a generated document. A reply that stopped at `length`
+/// lost its tail, so these numbers make a document that ran close to its budget
+/// visible after the fact instead of only in a failure message.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GenerationAttempt {
+    pub prompt_tokens: Option<u32>,
+    pub reply_tokens: Option<u32>,
+    pub done_reason: Option<String>,
+    /// Whether this attempt's text is the document that was kept.
+    #[serde(default)]
+    pub kept: bool,
+}
+
+/// What one generated document cost, and how many attempts it took.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentUsage {
+    pub skill_id: String,
+    /// The reply budget each attempt was given.
+    pub reply_limit: u32,
+    pub attempts: Vec<GenerationAttempt>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEvent {
     pub event_id: String,
@@ -57,6 +79,10 @@ pub struct AuditEvent {
     pub advisory_count: usize,
     pub override_reason: Option<String>,
     pub note: Option<String>,
+    /// Token use per generated document. Absent from events written before this
+    /// was recorded, so reading old trails stays possible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub generation_usage: Vec<DocumentUsage>,
 }
 
 fn default_incident_status() -> String {
@@ -328,6 +354,7 @@ pub fn new_event(application_id: &str, event: &str) -> AuditEvent {
         advisory_count: 0,
         override_reason: None,
         note: None,
+        generation_usage: Vec::new(),
     }
 }
 
@@ -474,6 +501,53 @@ mod tests {
         assert!(events[0].blocking);
         assert_eq!(events[1].note.as_deref(), Some("reviewed"));
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn generation_usage_survives_a_read_and_an_older_event_still_parses() {
+        let dir = temp_dir();
+        let mut event = new_event("app-1", "generated");
+        event.generation_usage.push(super::DocumentUsage {
+            skill_id: "resume-tailor".to_string(),
+            reply_limit: 8_192,
+            attempts: vec![
+                super::GenerationAttempt {
+                    prompt_tokens: Some(7_400),
+                    reply_tokens: Some(8_192),
+                    done_reason: Some("length".to_string()),
+                    kept: false,
+                },
+                super::GenerationAttempt {
+                    prompt_tokens: Some(7_400),
+                    reply_tokens: Some(1_502),
+                    done_reason: Some("stop".to_string()),
+                    kept: true,
+                },
+            ],
+        });
+
+        // A trail written before usage was recorded has no such field.
+        let mut legacy = serde_json::to_value(&event).unwrap();
+        legacy.as_object_mut().unwrap().remove("generation_usage");
+        let audit_dir = dir.join(super::AUDIT_DIR);
+        std::fs::create_dir_all(&audit_dir).unwrap();
+        std::fs::write(
+            audit_dir.join(super::EVENTS_FILE),
+            format!("{}\n", serde_json::to_string(&legacy).unwrap()),
+        )
+        .unwrap();
+        append_event(&dir, &event).unwrap();
+
+        let events = read_events(&dir);
+        assert_eq!(events.len(), 2);
+        assert!(events[0].generation_usage.is_empty());
+        let usage = &events[1].generation_usage[0];
+        assert_eq!(usage.skill_id, "resume-tailor");
+        assert_eq!(usage.reply_limit, 8_192);
+        assert_eq!(usage.attempts[0].done_reason.as_deref(), Some("length"));
+        assert!(!usage.attempts[0].kept);
+        assert!(usage.attempts[1].kept);
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

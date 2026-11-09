@@ -857,6 +857,16 @@ pub async fn execute_apply_workflow(
                     &letter.markdown_output,
                 ));
             }
+            // Prompt and reply tokens per document: a reply that stopped at the
+            // budget, or came close to it, is then visible without a rerun.
+            audit.generation_usage = [
+                result.resume_tailored.as_ref(),
+                result.cover_letter.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .filter_map(|skill| skill.usage.clone())
+            .collect();
             audit.blocking = report.blocking;
             audit.findings = report.findings.clone();
             audit.advisory_count = report

@@ -12,7 +12,7 @@ use rusqlite::OptionalExtension;
 use tauri::State;
 use crate::AppState;
 use crate::db::get_db_connection;
-use crate::ollama::{chat_with_ollama_async, OllamaChatMessage};
+use crate::ollama::{chat_with_ollama_async, OllamaChatMessage, OllamaChatResponse};
 use crate::claims::Claim;
 
 const MAX_PROMPT_CLAIM_BYTES: usize = 24_000;
@@ -53,6 +53,10 @@ pub struct SkillExecutionResult {
     /// Open fact markers the prompt warned the model about, as `claim: markers`.
     #[serde(default)]
     pub open_markers: Vec<String>,
+    /// Token use behind this document, carried into the apply audit record so a
+    /// reply that ran close to its budget is visible after the fact.
+    #[serde(default)]
+    pub usage: Option<crate::compliance::DocumentUsage>,
 }
 
 /// Input parameters for executing a guardrailed skill.
@@ -705,6 +709,19 @@ fn generated_document_problem_with(
     output: &str,
     enforce_length: bool,
 ) -> Option<String> {
+    honesty_problem_with(skill_id, output, enforce_length).or_else(|| {
+        if skill_id == "resume-tailor" {
+            resume_completeness_problem(output)
+        } else {
+            None
+        }
+    })
+}
+
+/// Defects a retry must never be allowed to ship: an empty draft, a human-fill
+/// marker outside bullet review, an echoed prompt, or an unfilled placeholder.
+/// Shape and completeness are judged separately, because those are repaired.
+fn honesty_problem_with(skill_id: &str, output: &str, enforce_length: bool) -> Option<String> {
     let normalized = output.to_lowercase();
     if output.trim().is_empty() {
         return Some("the model returned an empty document".to_string());
@@ -790,10 +807,37 @@ fn generated_document_problem_with(
             ));
         }
     }
-    if skill_id == "resume-tailor" && !normalized.contains("experience") {
-        return Some("the model did not return a complete tailored resume".to_string());
-    }
+    None
+}
 
+/// A tailored resume must carry an experience section. Common heading synonyms
+/// count, so '## Employment History' is not mistaken for a missing section.
+fn resume_completeness_problem(output: &str) -> Option<String> {
+    if has_experience_section(output) {
+        return None;
+    }
+    Some("the model did not return a complete tailored resume".to_string())
+}
+
+/// Keep the retried draft unless it lost the experience section or was cut off at
+/// the generation limit. Those are shape defects, not dishonesty, so the first
+/// draft - honest, complete and repairable - is kept instead of stopping the
+/// apply. `None` means neither draft can ship.
+fn resume_draft_to_keep(
+    first_output: &str,
+    first_truncated: bool,
+    retried_output: &str,
+    retried_truncated: bool,
+) -> Option<String> {
+    if !retried_truncated && resume_completeness_problem(retried_output).is_none() {
+        return Some(retried_output.to_string());
+    }
+    if !first_truncated
+        && honesty_problem_with("resume-tailor", first_output, false).is_none()
+        && resume_completeness_problem(first_output).is_none()
+    {
+        return Some(first_output.to_string());
+    }
     None
 }
 
@@ -876,10 +920,31 @@ fn letter_grounding_problem(output: &str, claims: &[Claim]) -> Option<String> {
 }
 
 fn build_document_retry_request(
+    skill_id: &str,
     source_material: &str,
     rejected_draft: &str,
     problem: &str,
 ) -> String {
+    // A resume retry keeps its skeleton and its dates; the letter guidance below
+    // would tell it to drop the very details a resume must preserve.
+    if skill_id == "resume-tailor" {
+        return format!(
+            "Rewrite the rejected draft below into a complete, different resume - not the same text with one \
+phrase removed. The rejection reason was: {}. Rebuild the resume in its required shape: the name as a \
+level-one heading, the bold capitalised headline, then '## Professional Summary', '## Core Competencies', \
+'## Technical Skills' and '## Professional Experience', followed by the other sections the base resume \
+supports. Keep '## Professional Experience' as its own section heading with the newest role first, and copy \
+each employer, job title and employment date range verbatim from the base resume onto its role line: never \
+drop a date, never move a role into Education, and never invent one. State only facts the verified source \
+material supports, keep its confirmed wording, and remove every bracketed placeholder without guessing at \
+unknown details. Do not copy the job description or the source materials into the document. Return only the \
+corrected resume in Markdown.\n\n\
+REJECTED DRAFT TO REVISE:\n{}\n\n\
+VERIFIED SOURCE MATERIAL (for factual checking only):\n{}",
+            problem, rejected_draft, source_material
+        );
+    }
+
     format!(
         "Revise the rejected draft below into a different, complete document — not the same text with one \
 phrase removed. The rejection reason was: {}. Do not reuse the phrase named in that reason, or a close \
@@ -904,8 +969,35 @@ fn count_date_ranges(text: &str) -> usize {
     pattern.find_iter(text).count()
 }
 
-/// Lines under a level-2 heading whose text contains `keyword`.
-fn section_lines<'a>(markdown: &'a str, keyword: &str) -> Vec<&'a str> {
+/// Section heading names that mean "employment history".
+const EXPERIENCE_HEADINGS: [&str; 6] = [
+    "experience",
+    "employment",
+    "work history",
+    "professional history",
+    "career history",
+    "professional background",
+];
+
+fn is_experience_heading(label: &str) -> bool {
+    EXPERIENCE_HEADINGS
+        .iter()
+        .any(|heading| label.contains(heading))
+}
+
+/// Whether the document carries an experience section at all. 'experience'
+/// anywhere still counts, so a resume naming it only in prose is not sent back.
+fn has_experience_section(output: &str) -> bool {
+    let lower = output.to_lowercase();
+    lower.contains("experience")
+        || output.lines().any(|line| match heading_of(line.trim()) {
+            Some((level, label)) => level <= 2 && is_experience_heading(&label),
+            None => false,
+        })
+}
+
+/// Lines under a level-2 heading whose text satisfies `matches`.
+fn section_lines<'a>(markdown: &'a str, matches: impl Fn(&str) -> bool) -> Vec<&'a str> {
     let mut inside = false;
     let mut lines = Vec::new();
     for line in markdown.lines() {
@@ -916,7 +1008,7 @@ fn section_lines<'a>(markdown: &'a str, keyword: &str) -> Vec<&'a str> {
             if inside && level <= 2 {
                 break;
             }
-            if level <= 2 && label.contains(keyword) {
+            if level <= 2 && matches(&label) {
                 inside = true;
                 continue;
             }
@@ -954,19 +1046,19 @@ fn has_year(text: &str) -> bool {
 /// Two defects a tailored resume must never ship with: a role filed under
 /// Education, and employment dates the base resume gives but the copy dropped.
 pub(crate) fn resume_structure_problem(output: &str, master_resume: &str) -> Option<String> {
-    let mut experience: Vec<String> = section_lines(output, "experience")
+    let mut experience: Vec<String> = section_lines(output, is_experience_heading)
         .into_iter()
         .filter(|line| line.starts_with("###"))
         .map(normalized_title)
         .collect();
     experience.extend(
-        section_lines(master_resume, "experience")
+        section_lines(master_resume, is_experience_heading)
             .into_iter()
             .filter(|line| line.starts_with("###"))
             .map(normalized_title),
     );
 
-    for line in section_lines(output, "education") {
+    for line in section_lines(output, |label| label.contains("education")) {
         if !line.starts_with("###") {
             continue;
         }
@@ -979,7 +1071,7 @@ pub(crate) fn resume_structure_problem(output: &str, master_resume: &str) -> Opt
         }
     }
 
-    let experience_text = section_lines(output, "experience").join("\n");
+    let experience_text = section_lines(output, is_experience_heading).join("\n");
     if count_date_ranges(master_resume) > 0 && !experience_text.trim().is_empty() && !has_year(&experience_text) {
         return Some(
             "the resume dropped every employment date the base resume gives; copy each role's date range verbatim onto its title line".to_string(),
@@ -999,7 +1091,7 @@ fn heading_of(line: &str) -> Option<(usize, String)> {
 }
 
 fn section_key(label: &str) -> &'static str {
-    if label.contains("experience") {
+    if is_experience_heading(label) {
         "experience"
     } else if label.contains("education") {
         "education"
@@ -1033,7 +1125,7 @@ fn trailing_date_range(line: &str) -> Option<String> {
 /// entry that repeats a role (its content stays in Experience).
 pub(crate) fn repair_resume_structure(output: &str, master_resume: &str) -> String {
     let mut master_roles: Vec<(String, Option<String>)> = Vec::new();
-    for line in section_lines(master_resume, "experience") {
+    for line in section_lines(master_resume, is_experience_heading) {
         if line.starts_with("###") {
             master_roles.push((normalized_title(line), trailing_date_range(line)));
         }
@@ -1296,6 +1388,41 @@ fn application_identity(
     .unwrap_or((None, None))
 }
 
+/// Reply budget for a generated document. A fixed 2000-token cap cut two-page
+/// resumes off mid-section, so the resume takes a third of the configured context
+/// (the same split the recruiter review uses); a letter keeps its smaller budget.
+const LETTER_REPLY_TOKENS: u32 = 2_000;
+const RESUME_REPLY_FLOOR: u32 = 3_000;
+const RESUME_REPLY_CEILING: u32 = 8_192;
+
+fn document_reply_tokens(skill_id: &str, num_ctx: Option<u32>) -> u32 {
+    if skill_id != "resume-tailor" {
+        return LETTER_REPLY_TOKENS;
+    }
+    let context = num_ctx.unwrap_or(crate::ollama::DEFAULT_NUM_CTX);
+    (context / 3).clamp(RESUME_REPLY_FLOOR, RESUME_REPLY_CEILING)
+}
+
+/// What one model call cost, as the audit record keeps it.
+fn generation_attempt(response: &OllamaChatResponse) -> crate::compliance::GenerationAttempt {
+    crate::compliance::GenerationAttempt {
+        prompt_tokens: response.prompt_eval_count,
+        reply_tokens: response.eval_count,
+        done_reason: response.done_reason.clone(),
+        kept: false,
+    }
+}
+
+/// A reply that stopped at the generation limit lost its tail, so its closing
+/// sections cannot be treated as a finished document.
+fn reply_hit_token_limit(response: &OllamaChatResponse) -> bool {
+    response
+        .done_reason
+        .as_deref()
+        .map(|reason| reason.eq_ignore_ascii_case("length"))
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 pub async fn execute_skill(
     input: SkillExecutionInput,
@@ -1336,6 +1463,7 @@ pub async fn execute_skill(
             untrusted_input_warning: None,
             jd_truncated: false,
             open_markers: Vec::new(),
+            usage: None,
         });
     }
 
@@ -1402,6 +1530,7 @@ pub async fn execute_skill(
     };
 
     // 7. Call Ollama chat
+    let reply_tokens = document_reply_tokens(&input.skill_id, config.num_ctx);
     let messages = vec![
         OllamaChatMessage {
             role: "system".to_string(),
@@ -1417,7 +1546,7 @@ pub async fn execute_skill(
         model.clone(),
         messages,
         Some(0.3),
-        Some(2000),
+        Some(reply_tokens),
         None,
         config.num_ctx,
     )
@@ -1425,17 +1554,27 @@ pub async fn execute_skill(
     .map_err(|e| format!("Ollama generation failed: {}", e))?;
 
     let first_output = clean_generated_markdown(&chat_response.message.content);
-    let first_problem = generated_document_problem(&input.skill_id, &first_output).or_else(|| {
-        if input.skill_id == "cover-letter" {
-            cover_letter_problem(&first_output, &claims)
-        } else if input.skill_id == "resume-tailor" {
-            master_resume
-                .as_deref()
-                .and_then(|master| resume_structure_problem(&first_output, master))
-        } else {
-            None
-        }
-    });
+    let first_truncated = reply_hit_token_limit(&chat_response);
+    let mut attempts = vec![generation_attempt(&chat_response)];
+    // Which attempt produced the document that is kept below.
+    let mut kept_attempt = 0usize;
+    // A reply cut off at the limit is not a complete document, whatever its
+    // opening looks like, so it goes back for one more attempt.
+    let first_problem = if first_truncated {
+        Some("the reply hit the generation limit before the document was finished".to_string())
+    } else {
+        generated_document_problem(&input.skill_id, &first_output).or_else(|| {
+            if input.skill_id == "cover-letter" {
+                cover_letter_problem(&first_output, &claims)
+            } else if input.skill_id == "resume-tailor" {
+                master_resume
+                    .as_deref()
+                    .and_then(|master| resume_structure_problem(&first_output, master))
+            } else {
+                None
+            }
+        })
+    };
     let markdown_output = if let Some(problem) = first_problem {
         let retry = chat_with_ollama_async(
             model,
@@ -1447,6 +1586,7 @@ pub async fn execute_skill(
                 OllamaChatMessage {
                     role: "user".to_string(),
                     content: build_document_retry_request(
+                        &input.skill_id,
                         &source_material,
                         &first_output,
                         &problem,
@@ -1454,15 +1594,17 @@ pub async fn execute_skill(
                 },
             ],
             Some(0.2),
-            Some(2000),
+            Some(reply_tokens),
             None,
             config.num_ctx,
         )
         .await
         .map_err(|error| format!("Ollama document retry failed: {}", error))?;
+        attempts.push(generation_attempt(&retry));
         let retried_output = clean_generated_markdown(&retry.message.content);
+        let retried_truncated = reply_hit_token_limit(&retry);
         // Honesty defects still abort; resume structure is repaired below.
-        let retry_problem = generated_document_problem_with(&input.skill_id, &retried_output, false)
+        let retry_problem = honesty_problem_with(&input.skill_id, &retried_output, false)
             .or_else(|| {
             if input.skill_id == "cover-letter" {
                 cover_letter_problem(&retried_output, &claims)
@@ -1476,9 +1618,44 @@ pub async fn execute_skill(
                 skill.name, retry_problem
             ));
         }
+        // Naming the limit is the actionable failure: the next attempt can raise
+        // the context instead of guessing at the model's wording.
+        let limit_problem = format!(
+            "{} generation failed validation after retry: the model hit its {}-token generation limit before the document was finished; raise the context setting or shorten the base resume",
+            skill.name, reply_tokens
+        );
+        // A retry that lost its experience section or was cut off is a shape
+        // defect, not a dishonesty: keep the honest first draft rather than
+        // stopping the apply.
+        let mut retried_output = if input.skill_id == "resume-tailor" {
+            match resume_draft_to_keep(
+                &first_output,
+                first_truncated,
+                &retried_output,
+                retried_truncated,
+            ) {
+                Some(draft) => {
+                    if draft == retried_output {
+                        kept_attempt = 1;
+                    }
+                    draft
+                }
+                None if first_truncated || retried_truncated => return Err(limit_problem),
+                None => {
+                    return Err(format!(
+                        "{} generation failed validation after retry: the model did not return a complete tailored resume",
+                        skill.name
+                    ))
+                }
+            }
+        } else if retried_truncated {
+            return Err(limit_problem);
+        } else {
+            kept_attempt = 1;
+            retried_output
+        };
         // Structure is repaired rather than fatal: an apply must not stop because
         // a date went missing or a role was filed under Education.
-        let mut retried_output = retried_output;
         if input.skill_id == "resume-tailor" {
             if let Some(master) = master_resume.as_deref() {
                 if resume_structure_problem(&retried_output, master).is_some() {
@@ -1502,6 +1679,12 @@ pub async fn execute_skill(
         )
     } else {
         markdown_output
+    };
+    attempts[kept_attempt].kept = true;
+    let usage = crate::compliance::DocumentUsage {
+        skill_id: input.skill_id.clone(),
+        reply_limit: reply_tokens,
+        attempts,
     };
     let elapsed_ms = start.elapsed().as_millis() as u64;
 
@@ -1535,6 +1718,7 @@ pub async fn execute_skill(
             .iter()
             .map(|marker| format!("{}: {}", marker.claim_id, marker.markers.join(", ")))
             .collect(),
+        usage: Some(usage),
     })
 }
 
@@ -1596,9 +1780,10 @@ pub fn seed_default_skills() -> Result<usize, String> {
 mod tests {
     use super::{
         assemble_source_material, build_document_retry_request, clean_generated_markdown,
-        deduplicate_claims, generated_document_problem, generated_document_problem_with, markers_in,
-        select_claims_for_prompt, validate_master_resume, with_open_markers, Claim, OpenMarker,
-        MAX_MASTER_RESUME_BYTES, MAX_PROMPT_CLAIM_BYTES,
+        deduplicate_claims, document_reply_tokens, generated_document_problem,
+        generated_document_problem_with, markers_in, reply_hit_token_limit,
+        resume_draft_to_keep, select_claims_for_prompt, validate_master_resume, with_open_markers,
+        Claim, OpenMarker, MAX_MASTER_RESUME_BYTES, MAX_PROMPT_CLAIM_BYTES,
     };
 
     fn claim(id: &str, wording: &str) -> Claim {
@@ -1763,6 +1948,7 @@ mod tests {
     fn retry_includes_rejected_draft_and_explicit_placeholder_removal_instructions() {
         let draft = "# Resume\n\n## Education\n[Degree] — [Institution]";
         let request = build_document_retry_request(
+            "cover-letter",
             "Verified: designed interactive learning.",
             draft,
             "the model left unfilled template placeholders",
@@ -1772,6 +1958,121 @@ mod tests {
         assert!(request.contains("Remove every bracketed placeholder"));
         assert!(request.contains("Omit unsupported"));
         assert!(request.contains("Verified: designed interactive learning."));
+    }
+
+    #[test]
+    fn an_experience_heading_synonym_is_not_a_missing_resume_section() {
+        let resume = "# Jane Q. Public\n\n**LEARNING DESIGN | MEASURED OUTCOMES**\n\n## Professional Summary\n\nA learning designer.\n\n## Employment History\n\n### Learning Designer (9/2024 - 9/2026)\n- **Program Design:** Built the curriculum.\n";
+        assert_eq!(generated_document_problem("resume-tailor", resume), None);
+        assert!(generated_document_problem(
+            "resume-tailor",
+            "# Jane Q. Public\n\n## Professional Summary\n\nA learning designer with 12 years of experience."
+        )
+        .is_none());
+        assert!(generated_document_problem(
+            "resume-tailor",
+            "# Jane Q. Public\n\n## Professional Summary\n\nA learning designer."
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn a_resume_retry_keeps_its_skeleton_and_dates() {
+        let draft = "# Jane Q. Public\n\n## Experience\n\n### Learning Designer\n- Built the curriculum.";
+        let request = build_document_retry_request(
+            "resume-tailor",
+            "Base resume: Learning Designer (9/2024 - 9/2026).",
+            draft,
+            "the resume dropped every employment date the base resume gives",
+        );
+        assert!(request.contains(draft));
+        assert!(request.contains("## Professional Experience"));
+        assert!(request.contains("date range verbatim"));
+        assert!(!request.contains("Omit unsupported contact"));
+    }
+
+    #[test]
+    fn a_retry_that_lost_its_experience_section_falls_back_to_the_honest_first_draft() {
+        let first = "# Jane Q. Public\n\n## Experience\n\n### Learning Designer (9/2024 - 9/2026)\n- Built the curriculum.";
+        let thin_retry = "# Jane Q. Public\n\n## Professional Summary\n\nA learning designer.";
+        assert_eq!(
+            resume_draft_to_keep(first, false, thin_retry, false),
+            Some(first.to_string())
+        );
+
+        // A first draft with a placeholder was never shippable, so neither is it.
+        let placeholder_first = "# Jane Q. Public\n\n## Experience\n\n### Learning Designer\n[Candidate Full Name]";
+        assert_eq!(
+            resume_draft_to_keep(placeholder_first, false, thin_retry, false),
+            None
+        );
+
+        let complete_retry = "# Jane\n\n## Work History\n\n### Lead (1/2020 - 1/2022)";
+        assert_eq!(
+            resume_draft_to_keep(first, false, complete_retry, false),
+            Some(complete_retry.to_string())
+        );
+    }
+
+    #[test]
+    fn a_retry_cut_off_at_the_token_limit_falls_back_to_a_finished_first_draft() {
+        let first = "# Jane Q. Public\n\n## Experience\n\n### Learning Designer (9/2024 - 9/2026)\n- Built the curriculum.";
+        // The retry looks complete but stopped at the limit, so it is not shipped.
+        assert_eq!(
+            resume_draft_to_keep(first, false, first, true),
+            Some(first.to_string())
+        );
+        // Two cut-off drafts leave nothing to ship.
+        assert_eq!(resume_draft_to_keep(first, true, first, true), None);
+    }
+
+    #[test]
+    fn a_resume_reply_budget_grows_with_the_context_and_a_letter_budget_does_not() {
+        assert_eq!(document_reply_tokens("resume-tailor", None), 8_192);
+        assert_eq!(document_reply_tokens("resume-tailor", Some(6_000)), 3_000);
+        assert_eq!(document_reply_tokens("resume-tailor", Some(12_288)), 4_096);
+        assert_eq!(document_reply_tokens("cover-letter", None), 2_000);
+        assert_eq!(document_reply_tokens("cover-letter", Some(6_000)), 2_000);
+    }
+
+    #[test]
+    fn a_reply_that_hit_the_generation_limit_is_recognised() {
+        let response = |reason: Option<&str>| crate::ollama::OllamaChatResponse {
+            model: "m".to_string(),
+            created_at: String::new(),
+            message: crate::ollama::OllamaChatMessage {
+                role: "assistant".to_string(),
+                content: String::new(),
+            },
+            done: true,
+            done_reason: reason.map(|reason| reason.to_string()),
+            prompt_eval_count: None,
+            eval_count: None,
+        };
+        assert!(reply_hit_token_limit(&response(Some("length"))));
+        assert!(!reply_hit_token_limit(&response(Some("stop"))));
+        assert!(!reply_hit_token_limit(&response(None)));
+    }
+
+    #[test]
+    fn a_generation_attempt_records_prompt_reply_and_stop_reason() {
+        let response = crate::ollama::OllamaChatResponse {
+            model: "m".to_string(),
+            created_at: String::new(),
+            message: crate::ollama::OllamaChatMessage {
+                role: "assistant".to_string(),
+                content: String::new(),
+            },
+            done: true,
+            done_reason: Some("length".to_string()),
+            prompt_eval_count: Some(7_400),
+            eval_count: Some(8_192),
+        };
+        let attempt = super::generation_attempt(&response);
+        assert_eq!(attempt.prompt_tokens, Some(7_400));
+        assert_eq!(attempt.reply_tokens, Some(8_192));
+        assert_eq!(attempt.done_reason.as_deref(), Some("length"));
+        assert!(!attempt.kept);
     }
 
     #[test]
@@ -2111,6 +2412,17 @@ mod document_shape_tests {
         let repaired = repair_resume_structure(output, MASTER);
         assert!(
             repaired.contains("### Officer and instructor (9/2024 - 9/2026)"),
+            "{repaired}"
+        );
+        assert_eq!(resume_structure_problem(&repaired, MASTER), None);
+    }
+
+    #[test]
+    fn dates_are_repaired_under_an_experience_heading_synonym() {
+        let output = "# David W. Bouknight\n\n## Work History\n\n### Lieutenant, US Naval Academy\n- Ran the training program.\n";
+        let repaired = repair_resume_structure(output, MASTER);
+        assert!(
+            repaired.contains("### Lieutenant, US Naval Academy (9/2024 - 9/2026)"),
             "{repaired}"
         );
         assert_eq!(resume_structure_problem(&repaired, MASTER), None);
