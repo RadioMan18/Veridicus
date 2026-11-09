@@ -565,6 +565,8 @@ pub async fn execute_apply_workflow(
             use_deep_model: true,
             required_gaps: Vec::new(),
             coverage_terms: coverage_terms.clone(),
+            employer: Some(employer.clone()),
+            role: Some(role.clone()),
         },
         state.clone(),
     ).await;
@@ -592,6 +594,8 @@ pub async fn execute_apply_workflow(
             use_deep_model: true,
             required_gaps: required_gaps.clone(),
             coverage_terms: Vec::new(),
+            employer: Some(employer.clone()),
+            role: Some(role.clone()),
         },
         state.clone(),
     ).await;

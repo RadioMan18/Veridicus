@@ -22,7 +22,7 @@ Every generated sentence is grounded in a **Claims Ledger** of confirmed facts; 
 1. Scrape the posting (plain HTTP fetch with a JSON-LD fallback for Workday-style pages).
 2. Gap analysis and a job-description brief against your ledger.
 3. Tailor the resume from verified claims.
-4. Write the cover letter, then add letterhead, reference line, salutation and signature deterministically.
+4. Write the cover letter, then add the letterhead, date, recipient block, salutation and signature deterministically.
 5. Fact-check pass, then Typst PDF compile and visual QA on the rasterised pages.
 6. Write the application to the ledger and commit the artifacts to Git in the workspace.
 
@@ -31,7 +31,7 @@ Each stage emits progress and can be cancelled; artifacts are previewed in the a
 ### Documents
 
 - **Tailored resume** — written in your own resume voice (bold capitals headline, professional summary, grouped competencies, labelled bullets), and its structure is validated, not just prose: each role keeps the employer, title and date range from your base resume, and Education may only contain degrees, credentials and institutions. A resume that loses its dates or files a role under Education is repaired deterministically (dates copied back from the base resume, the duplicate removed from Education) instead of failing the apply.
-- **Cover letter** — five paragraphs and 350–480 words, ending with a paragraph that names each required gap plainly. The model writes the body; CareerOS composes the letterhead, `Re:` line, salutation and signature so the letter is a letter and the sign-off never collapses into one line.
+- **Cover letter** — five paragraphs and 350–480 words, ending with a paragraph that names each required gap plainly. The model writes the body; CareerOS composes the letterhead, date, recipient block, salutation and signature so the letter is a letter, the salutation always names the posting's employer, and the sign-off never collapses into one line.
 - **Prompt templates you can edit** — plain Markdown in `Documents/CareerOS/.careeros/skills/`, one file per skill, where the body is the whole system prompt. Shipped templates carry a version; on upgrade the old file is kept as `<skill>.md.v<old>.bak`.
 - **Outputs** — Typst PDF, plus ATS-oriented DOCX and ODT export of the master resume.
 
@@ -95,14 +95,17 @@ During a mock session: `/skip`, `/retry`, `/end`.
 
 - [Node.js](https://nodejs.org/) 18+
 - [Rust](https://rustup.rs/) (latest stable)
-- [Ollama](https://ollama.ai/) running locally, with at least one model pulled (for example `ollama pull llama3.2:latest`)
+- [Ollama](https://ollama.com/download) installed and running locally, with at least two models pulled: a fast one for short tasks and a deep one for documents
 - The Typst and Poppler sidecar binaries available to the app
+
+Ollama installs from the download page on Windows and macOS, or with `curl -fsSL https://ollama.com/install.sh | sh` on Linux, and then serves the API on `http://localhost:11434`. A good pair for a 16 GB machine is `llama3.2:3b` as the fast model and `gemma4:12b` as the deep model; sizes, sizing rules and the full recommendation table are in [USER_GUIDE.md](USER_GUIDE.md#install-ollama).
 
 ## Running
 
 ```bash
 npm install
-ollama pull llama3.2:latest
+ollama pull llama3.2:3b
+ollama pull gemma4:12b
 npm run tauri dev
 ```
 

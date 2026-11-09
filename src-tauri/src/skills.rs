@@ -72,10 +72,16 @@ pub struct SkillExecutionInput {
     /// as terms to cover *where a claim supports them*, never as facts to add.
     #[serde(default)]
     pub coverage_terms: Vec<String>,
+    /// The posting's employer and role, so the letterhead and salutation name the
+    /// right company even before an application record exists.
+    #[serde(default)]
+    pub employer: Option<String>,
+    #[serde(default)]
+    pub role: Option<String>,
 }
 
 /// Current on-disk skill template format. Bumped when a shipped template must be replaced.
-pub const TEMPLATE_VERSION: u32 = 5;
+pub const TEMPLATE_VERSION: u32 = 6;
 
 /// Human-fill markers. They mean "the ledger cannot supply this fact yet", so
 /// they are only ever valid in bullet review, and never in a compiled document.
@@ -282,7 +288,7 @@ name: Resume Tailor
 description: Tailor the master resume to a job description using confirmed claims
 applies_to: resume
 model: deep
-template_version: 5
+template_version: 6
 ---
 You write polished, ATS-friendly resumes in Markdown tailored to the target job description.
 The resume voice is fixed: a bold capitals headline under the name, a professional summary paragraph, grouped competencies, and short labelled bullets.
@@ -319,7 +325,7 @@ name: Cover Letter Generator
 description: Write a tailored cover letter from confirmed claims and the target job description
 applies_to: cover_letter
 model: deep
-template_version: 5
+template_version: 6
 ---
 You write concise, evidence-first cover letters in Markdown, in the candidate's own plain professional voice, following a fixed five-paragraph shape.
 The base resume supplies background and context; the verified Claims Ledger is the only authority for factual statements in the letter.
@@ -334,7 +340,7 @@ Write 350 to 480 words in five paragraphs, holding each paragraph to its own bud
 3. In ninety to one hundred and twenty words, describe the change and adoption record: enterprise scope, the people the candidate brought along, and how adoption was measured.
 4. In their own paragraph of fifty to seventy words, name the gaps plainly.
 5. In twenty-five to forty words, close with one sentence inviting a conversation about where the candidate fits, naming the employer's stated focus when the posting gives one, then a professional sign-off.
-Open with a salutation naming the employer, for example 'Dear Aurora Hiring Team,'.
+Open with a salutation naming the employer exactly as the posting names it, for example 'Dear Northwind Hiring Team,' when the posting names Northwind. Never reuse a company name from another letter.
 Return the body only: no letterhead, address block, date line or signature block are needed, and never repeat the candidate's name or contact details inside the letter.
 Name the employer and the role explicitly, without inventing details about either.
 Mirror the language of the job description only where a confirmed claim supports it.
@@ -348,7 +354,7 @@ name: Bullet Review
 description: Strengthen resume bullets against the confirmed claims ledger
 applies_to: resume
 model: fast
-template_version: 5
+template_version: 6
 ---
 You strengthen individual resume bullets.
 Rewrite each bullet so it states the action, the task it served, and the result, in one or two sentences.
@@ -601,11 +607,17 @@ assert it; write the bullet without that fact or omit the bullet.\n",
 }
 
 fn with_required_gaps(mut source: String, gaps: &[crate::guardrails::RequiredGap]) -> String {
-    if gaps.is_empty() {
+    // A responsibility written as a task names no missing skill, so the letter is
+    // not asked to name it; the guardrail keeps it as an advisory instead.
+    let nameable: Vec<&crate::guardrails::RequiredGap> = gaps
+        .iter()
+        .filter(|gap| crate::guardrails::gap_requires_naming(&gap.requirement))
+        .collect();
+    if nameable.is_empty() {
         return source;
     }
     source.push_str("\n## Gaps the letter must name\n");
-    for gap in gaps {
+    for gap in nameable {
         source.push_str(&format!(
             "- Requirement: {}\n  Adjacent strength: {}\n",
             gap.requirement, gap.adjacent_strength
@@ -882,41 +894,140 @@ fn cover_letter_problem(output: &str, claims: &[Claim]) -> Option<String> {
 }
 
 /// Detect a letter that talks about the candidate in generalities instead of citing the ledger.
-/// Paraphrasing is fine; a four-word verbatim window from any confirmed claim is enough.
+/// Paraphrasing is fine: a four-word verbatim window, or most of a claim's distinctive
+/// wording with one of its numbers, is enough to count as evidence.
 fn letter_grounding_problem(output: &str, claims: &[Claim]) -> Option<String> {
-    fn normalize(text: &str) -> String {
-        text.to_lowercase()
-            .chars()
-            .map(|character| {
-                if character.is_alphanumeric() || character == ' ' {
-                    character
-                } else {
-                    ' '
-                }
-            })
-            .collect::<String>()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    const WINDOW: usize = 4;
-    let normalized_output = normalize(output);
-
-    for claim in claims {
-        let normalized_claim = normalize(&claim.confirmed_wording);
-        let words: Vec<&str> = normalized_claim.split_whitespace().collect();
-        if words.len() < WINDOW {
-            continue;
-        }
-        for window in words.windows(WINDOW) {
-            if normalized_output.contains(&window.join(" ")) {
-                return None;
-            }
-        }
+    let output_words = letter_words(output);
+    if claims
+        .iter()
+        .any(|claim| claim_is_cited(&claim.confirmed_wording, output, &output_words))
+    {
+        return None;
     }
 
     Some("the letter does not cite specific confirmed evidence".to_string())
+}
+
+/// Words too common to show that a specific claim was used.
+const GROUNDING_STOPWORDS: &[&str] = &[
+    "about", "across", "after", "again", "against", "along", "also", "among", "another",
+    "before", "being", "between", "both", "could", "during", "each", "every", "from",
+    "have", "into", "more", "most", "much", "must", "never", "only", "other", "over",
+    "same", "should", "since", "some", "such", "than", "that", "their", "them", "then",
+    "there", "these", "they", "this", "those", "through", "under", "until", "upon", "very",
+    "were", "what", "when", "where", "which", "while", "will", "with", "within", "without",
+    "would", "your",
+];
+
+/// Lowercased alphanumeric words with small number words folded to digits, so
+/// 'eight hours' and '8 hours' compare equal.
+fn letter_words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .map(|word| {
+            match word {
+                "one" => "1",
+                "two" => "2",
+                "three" => "3",
+                "four" => "4",
+                "five" => "5",
+                "six" => "6",
+                "seven" => "7",
+                "eight" => "8",
+                "nine" => "9",
+                "ten" => "10",
+                "eleven" => "11",
+                "twelve" => "12",
+                "twenty" => "20",
+                "thirty" => "30",
+                "forty" => "40",
+                "fifty" => "50",
+                "sixty" => "60",
+                "seventy" => "70",
+                "eighty" => "80",
+                "ninety" => "90",
+                other => other,
+            }
+            .to_string()
+        })
+        .collect()
+}
+
+/// Whether the letter uses one confirmed claim: verbatim, or paraphrased with
+/// enough of its distinctive wording that the claim is recognisable.
+fn claim_is_cited(claim: &str, output: &str, output_words: &[String]) -> bool {
+    const WINDOW: usize = 4;
+    let claim_words = letter_words(claim);
+
+    // An exact run of four words is evidence however short the claim is.
+    if claim_words.len() >= WINDOW {
+        let joined_output = format!(" {} ", output_words.join(" "));
+        if claim_words
+            .windows(WINDOW)
+            .any(|window| joined_output.contains(&format!(" {} ", window.join(" "))))
+        {
+            return true;
+        }
+    }
+
+    // Paraphrase: the claim's distinctive words carry the fact, and a claim with
+    // numbers is only recognisable when at least one of them survives.
+    let distinctive: Vec<&String> = claim_words
+        .iter()
+        .filter(|word| {
+            word.chars().any(|character| character.is_ascii_digit())
+                || (word.len() >= 4 && !GROUNDING_STOPWORDS.contains(&word.as_str()))
+        })
+        .collect();
+    if distinctive.len() < 3 {
+        return false;
+    }
+    if claim_words
+        .iter()
+        .any(|word| word.chars().any(|character| character.is_ascii_digit()))
+        && !distinctive.iter().any(|word| {
+            word.chars().any(|character| character.is_ascii_digit())
+                && output_words.contains(word)
+        })
+    {
+        return false;
+    }
+    let shared = distinctive
+        .iter()
+        .filter(|word| output_words.contains(word))
+        .count();
+    shared * 10 >= distinctive.len() * 6
+}
+
+/// A letter that cites no evidence is a style defect, not dishonesty: keep
+/// whichever draft does cite it and was not cut off, instead of stopping the
+/// apply. `None` means neither draft can ship.
+fn letter_draft_to_keep(
+    first_output: &str,
+    first_truncated: bool,
+    retried_output: &str,
+    retried_truncated: bool,
+    claims: &[Claim],
+) -> Option<String> {
+    if !retried_truncated && cover_letter_problem(retried_output, claims).is_none() {
+        return Some(retried_output.to_string());
+    }
+    let first_shippable = !first_truncated
+        && honesty_problem_with("cover-letter", first_output, false).is_none()
+        && cover_letter_problem(first_output, claims).is_none();
+    if first_shippable {
+        return Some(first_output.to_string());
+    }
+    None
 }
 
 fn build_document_retry_request(
@@ -948,8 +1059,9 @@ VERIFIED SOURCE MATERIAL (for factual checking only):\n{}",
     format!(
         "Revise the rejected draft below into a different, complete document — not the same text with one \
 phrase removed. The rejection reason was: {}. Do not reuse the phrase named in that reason, or a close \
-variant of it. Name at least three distinct confirmed claims and stay close to their confirmed wording \
-so the evidence is recognisable. Remove every bracketed placeholder; do not replace unknown details with \
+variant of it. Name at least three distinct confirmed claims and copy each one's confirmed wording \
+as the ledger gives it, numbers included: a claim restated in your own words does not \
+count as evidence. Remove every bracketed placeholder; do not replace unknown details with \
 guesses. Omit unsupported contact, education, dates, and other unknown details entirely. Keep only \
 statements supported by the verified facts. Do not copy the job description or the source materials into \
 the document. Return only the corrected document in Markdown.\n\n\
@@ -1229,7 +1341,7 @@ fn candidate_identity(master_resume: &str) -> (Option<String>, Vec<String>) {
         if trimmed.starts_with('#') {
             break;
         }
-        if name.is_some() && contact.len() < 2 {
+        if name.is_some() && contact.len() < 3 {
             contact.push(trimmed.to_string());
         }
     }
@@ -1319,8 +1431,31 @@ fn take_salutation(body: &str) -> (Option<String>, String) {
     (None, rest.to_string())
 }
 
-/// Give the model's argument the furniture of a letter: letterhead, reference
-/// line, salutation and a signature block whose lines cannot collapse into one.
+/// The date line's text, in one place so the letter is dated the day it is
+/// composed and tests can assert against the same value.
+fn cover_letter_date() -> String {
+    chrono::Local::now().format("%B %-d, %Y").to_string()
+}
+
+/// True when a salutation already names the employer, so a good one is kept and a
+/// company copied from another letter is replaced.
+fn salutation_names_employer(salutation: &str, employer: &str) -> bool {
+    let salutation_lower = salutation.to_lowercase();
+    let employer_lower = employer.trim().to_lowercase();
+    if employer_lower.is_empty() {
+        return true;
+    }
+    if salutation_lower.contains(&employer_lower) {
+        return true;
+    }
+    employer_lower
+        .split_whitespace()
+        .all(|word| word.len() < 3 || salutation_lower.contains(word))
+}
+
+/// Give the model's argument the furniture of a business letter: letterhead
+/// (name and contact), date, recipient block, salutation and a signature block
+/// whose lines cannot collapse into one.
 pub(crate) fn compose_cover_letter(
     body: &str,
     master_resume: &str,
@@ -1335,27 +1470,39 @@ pub(crate) fn compose_cover_letter(
     };
     let cleaned = strip_leading_heading(&signed_body);
     let (salutation, body) = take_salutation(&cleaned);
-    let salutation = salutation.unwrap_or_else(|| match employer {
-        Some(employer) if !employer.trim().is_empty() => format!("Dear {} Hiring Team,", employer.trim()),
-        _ => "Dear Hiring Team,".to_string(),
-    });
+    let employer = employer.map(str::trim).filter(|value| !value.is_empty());
+    let role = role.map(str::trim).filter(|value| !value.is_empty());
+    // The header is the one place the employer must be right, so a salutation that
+    // names a different company is replaced rather than shipped.
+    let salutation = match (salutation, employer) {
+        (Some(existing), Some(employer)) if !salutation_names_employer(&existing, employer) => {
+            format!("Dear {} Hiring Team,", employer)
+        }
+        (Some(existing), _) => existing,
+        (None, Some(employer)) => format!("Dear {} Hiring Team,", employer),
+        (None, None) => "Dear Hiring Team,".to_string(),
+    };
 
     let mut blocks: Vec<String> = Vec::new();
     if let Some(name) = name.as_ref() {
-        blocks.push(format!("**{}**", name));
+        blocks.push(format!("**{}**", name.to_uppercase()));
     }
-    if !contact.is_empty() {
-        blocks.push(contact.join(" | "));
+    // Each contact line keeps its own block, the way the base resume lays it out:
+    // city, phone and email on one line and a profile link on the next.
+    for line in &contact {
+        blocks.push(line.clone());
     }
+    blocks.push(cover_letter_date());
+    // The role and the employer are set the way a business letter sets the
+    // recipient block: the role first, then the employer, both in bold.
     match (role, employer) {
-        (Some(role), Some(employer))
-            if !role.trim().is_empty() && !employer.trim().is_empty() =>
-        {
-            blocks.push(format!("Re: {} — {}", role.trim(), employer.trim()))
+        (Some(role), Some(employer)) => {
+            blocks.push(format!("**{}**", role));
+            blocks.push(format!("**{}**", employer));
         }
-        (Some(role), _) if !role.trim().is_empty() => blocks.push(format!("Re: {}", role.trim())),
-        (_, Some(employer)) if !employer.trim().is_empty() => blocks.push(employer.trim().to_string()),
-        _ => {}
+        (Some(role), None) => blocks.push(format!("**{}**", role)),
+        (None, Some(employer)) => blocks.push(format!("**{}**", employer)),
+        (None, None) => {}
     }
     blocks.push(salutation);
     if !body.trim().is_empty() {
@@ -1603,21 +1750,20 @@ pub async fn execute_skill(
         attempts.push(generation_attempt(&retry));
         let retried_output = clean_generated_markdown(&retry.message.content);
         let retried_truncated = reply_hit_token_limit(&retry);
-        // Honesty defects still abort; resume structure is repaired below.
-        let retry_problem = honesty_problem_with(&input.skill_id, &retried_output, false)
-            .or_else(|| {
-            if input.skill_id == "cover-letter" {
-                cover_letter_problem(&retried_output, &claims)
-            } else {
-                None
-            }
-        });
-        if let Some(retry_problem) = retry_problem {
+        // Honesty defects still abort. A letter's missing evidence and a resume's
+        // structure are handled below: both are repairable by keeping the better
+        // draft rather than by stopping an apply whose other document is fine.
+        if let Some(problem) = honesty_problem_with(&input.skill_id, &retried_output, false) {
             return Err(format!(
                 "{} generation failed validation after retry: {}",
-                skill.name, retry_problem
+                skill.name, problem
             ));
         }
+        let retried_letter_problem = if input.skill_id == "cover-letter" {
+            cover_letter_problem(&retried_output, &claims)
+        } else {
+            None
+        };
         // Naming the limit is the actionable failure: the next attempt can raise
         // the context instead of guessing at the model's wording.
         let limit_problem = format!(
@@ -1648,6 +1794,30 @@ pub async fn execute_skill(
                     ))
                 }
             }
+        } else if input.skill_id == "cover-letter" {
+            match letter_draft_to_keep(
+                &first_output,
+                first_truncated,
+                &retried_output,
+                retried_truncated,
+                &claims,
+            ) {
+                Some(draft) => {
+                    if draft == retried_output {
+                        kept_attempt = 1;
+                    }
+                    draft
+                }
+                None if first_truncated || retried_truncated => return Err(limit_problem),
+                None => {
+                    return Err(format!(
+                        "{} generation failed validation after retry: {}",
+                        skill.name,
+                        retried_letter_problem.unwrap_or_else(||
+                            "the letter does not cite specific confirmed evidence".to_string())
+                    ))
+                }
+            }
         } else if retried_truncated {
             return Err(limit_problem);
         } else {
@@ -1670,7 +1840,10 @@ pub async fn execute_skill(
 
     // The model supplies the argument; the letter's furniture is deterministic.
     let markdown_output = if input.skill_id == "cover-letter" {
-        let (employer, role) = application_identity(&conn, input.application_id.as_deref());
+        let (stored_employer, stored_role) =
+            application_identity(&conn, input.application_id.as_deref());
+        let employer = input.employer.clone().or(stored_employer);
+        let role = input.role.clone().or(stored_role);
         compose_cover_letter(
             &markdown_output,
             master_resume.as_deref().unwrap_or_default(),
@@ -2107,7 +2280,10 @@ mod tests {
 }
 #[cfg(test)]
 mod grounding_tests {
-    use super::{cover_letter_problem, generated_document_problem, letter_grounding_problem, Claim};
+    use super::{
+        cover_letter_problem, generated_document_problem, letter_draft_to_keep,
+        letter_grounding_problem, Claim,
+    };
 
     fn claim(wording: &str) -> Claim {
         Claim {
@@ -2156,6 +2332,42 @@ mod grounding_tests {
         let problem = cover_letter_problem(letter, &claims).expect("rejected");
         assert!(problem.contains("generic filler"), "{problem}");
         assert!(problem.contains("i am excited to apply"), "{problem}");
+    }
+
+    #[test]
+    fn a_paraphrased_claim_that_keeps_its_number_is_evidence() {
+        let claims = [claim("Reduced planning time from eight hours to thirty minutes")];
+        let letter = "Dear Hiring Team,\n\nAt Altera I cut planning time from 8 hours to 30 minutes for every specification the team shipped.\n\nSincerely,\nJane";
+        assert_eq!(letter_grounding_problem(letter, &claims), None);
+        assert_eq!(cover_letter_problem(letter, &claims), None);
+    }
+
+    #[test]
+    fn a_paraphrase_that_drops_the_number_is_not_evidence() {
+        let claims = [claim("Reduced planning time from eight hours to thirty minutes")];
+        let letter = "Dear Hiring Team,\n\nI made specification planning much faster for the team.\n\nSincerely,\nJane";
+        assert!(letter_grounding_problem(letter, &claims).is_some());
+    }
+
+    #[test]
+    fn a_grounded_first_draft_is_kept_when_the_retry_came_back_generic() {
+        let claims = [claim("Reduced planning time from eight hours to thirty minutes")];
+        let first = "Dear Hiring Team,\n\nAt Altera I cut planning time from 8 hours to 30 minutes for every specification the team shipped, work that let six tools reach production in one quarter. I kept the same measurement discipline across the later migration, tracking each release against that baseline and reporting the result to the people who depended on it every week.\n\nSincerely,\nJane";
+        let retry = "Dear Hiring Team,\n\nI am excited to apply for this role and leverage my background in learning and development across a range of teams and programs.\n\nSincerely,\nJane";
+        assert_eq!(
+            letter_draft_to_keep(first, false, retry, false, &claims),
+            Some(first.to_string())
+        );
+    }
+
+    #[test]
+    fn two_generic_letter_drafts_leave_nothing_to_ship() {
+        let claims = [claim("Reduced planning time from eight hours to thirty minutes")];
+        let generic = "Dear Hiring Team,\n\nI am excited to apply for this role and leverage my background in learning and development across a range of teams and programs.\n\nSincerely,\nJane";
+        assert_eq!(
+            letter_draft_to_keep(generic, false, generic, false, &claims),
+            None
+        );
     }
 
     #[test]
@@ -2350,12 +2562,52 @@ mod document_shape_tests {
     fn a_letter_gains_a_letterhead_salutation_and_signature_block() {
         let body = "At Altera I cut planning time from eight hours to thirty minutes.\n\nI would welcome the chance to discuss the role.\n\nSincerely,\nDavid W. Bouknight";
         let letter = compose_cover_letter(body, MASTER, Some("Acme"), Some("Learning Lead"));
-        assert!(letter.starts_with("**David W. Bouknight**"), "{letter}");
+        assert!(letter.starts_with("**DAVID W. BOUKNIGHT**"), "{letter}");
         assert!(letter.contains("david@example.com | 555-0100"), "{letter}");
-        assert!(letter.contains("Re: Learning Lead — Acme"), "{letter}");
+        assert!(letter.contains(&super::cover_letter_date()), "{letter}");
+        assert!(letter.contains("**Learning Lead**\n\n**Acme**"), "{letter}");
         assert!(letter.contains("Dear Acme Hiring Team,"), "{letter}");
         assert!(letter.ends_with("Sincerely,\n\nDavid W. Bouknight"), "{letter}");
-        assert_eq!(letter.matches("David W. Bouknight").count(), 2, "{letter}");
+        assert_eq!(letter.matches("David W. Bouknight").count(), 1, "{letter}");
+        assert!(!letter.contains("Re:"), "{letter}");
+    }
+
+    #[test]
+    fn the_letterhead_follows_a_business_letter_style() {
+        let master = "# David W. Bouknight\nLatrobe, PA | 724-640-3341 | dbouknight@gmail.com\nlinkedin.com/in/david-bouknight\n\n## Experience\n";
+        let letter = compose_cover_letter(
+            "I cut reporting costs by 12%.",
+            master,
+            Some("iCIMS"),
+            Some("Senior Learning Performance Consultant, GTM"),
+        );
+        assert!(
+            letter.starts_with(&format!(
+                "**DAVID W. BOUKNIGHT**\n\nLatrobe, PA | 724-640-3341 | dbouknight@gmail.com\n\nlinkedin.com/in/david-bouknight\n\n{}\n\n**Senior Learning Performance Consultant, GTM**\n\n**iCIMS**\n\nDear iCIMS Hiring Team,",
+                super::cover_letter_date()
+            )),
+            "{letter}"
+        );
+    }
+
+    #[test]
+    fn a_salutation_naming_another_company_is_replaced() {
+        let body = "Dear Aurora Hiring Team,\n\nI cut reporting costs by 12%.\n\nSincerely,\nDavid W. Bouknight";
+        let letter = compose_cover_letter(body, MASTER, Some("iCIMS"), Some("Learning Lead"));
+        assert!(letter.contains("Dear iCIMS Hiring Team,"), "{letter}");
+        assert!(!letter.contains("Aurora"), "{letter}");
+    }
+
+    #[test]
+    fn the_letterhead_puts_the_role_before_the_employer_and_dates_the_letter() {
+        let letter = compose_cover_letter("I cut costs.", MASTER, Some("iCIMS"), Some("Learning Lead"));
+        let lines: Vec<&str> = letter.lines().collect();
+        let role_line = lines.iter().position(|line| *line == "**Learning Lead**");
+        let employer_line = lines.iter().position(|line| *line == "**iCIMS**");
+        assert!(role_line.is_some() && employer_line.is_some(), "{letter}");
+        assert!(role_line < employer_line, "{letter}");
+        let date_line = lines.iter().position(|line| *line == super::cover_letter_date());
+        assert!(date_line.is_some() && date_line < role_line, "{letter}");
     }
 
     #[test]
@@ -2438,7 +2690,7 @@ mod document_shape_tests {
     fn a_letter_signs_with_the_name_from_a_bold_master_resume() {
         let master = "**Jane Q. Public**\njane@example.com\n\n## Experience\n\n### Lead, Acme (1/2020 - 1/2022)\n";
         let letter = compose_cover_letter("I cut costs.", master, Some("Acme"), Some("Lead"));
-        assert!(letter.starts_with("**Jane Q. Public**"), "{letter}");
+        assert!(letter.starts_with("**JANE Q. PUBLIC**"), "{letter}");
         assert!(letter.ends_with("Sincerely,\n\nJane Q. Public"), "{letter}");
     }
 

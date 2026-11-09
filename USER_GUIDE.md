@@ -2,6 +2,38 @@
 
 ## Getting Started
 
+### Install Ollama
+
+CareerOS runs every model locally through Ollama: there is no cloud account, API key or subscription. Install Ollama once, before the setup wizard asks which models to use.
+
+- **Windows**: download `OllamaSetup.exe` from [ollama.com/download](https://ollama.com/download) and run it, or install from PowerShell with `irm https://ollama.com/install.ps1 | iex`. It installs in your user account, starts in the background, and serves the API on `http://localhost:11434`.
+- **macOS**: download the app from [ollama.com/download](https://ollama.com/download) and drag it to Applications, or run `curl -fsSL https://ollama.com/install.sh | sh`. Open the app once so its background service starts.
+- **Linux**: run `curl -fsSL https://ollama.com/install.sh | sh`, which installs and starts the service.
+
+Confirm the install, then pull at least one model:
+
+```
+ollama --version
+ollama pull llama3.2:3b
+```
+
+If CareerOS reports that Ollama is not responding, start the daemon with `ollama serve` (on Windows and macOS the desktop app normally starts it for you).
+
+### Recommended Models
+
+CareerOS uses two model roles, set in Ollama Settings: a **fast** model for short tasks (gap analysis, fact-check, bullet review) and a **deep** model for documents (`/apply`, `/prep`, `/mock`). Both should be instruction-tuned, because the app relies on the model following a fixed output shape and returning JSON for bullet review.
+
+| Model | Pull | Size | Role |
+| --- | --- | --- | --- |
+| `llama3.2:3b` | `ollama pull llama3.2:3b` | 2.0 GB | Fast default; fits an 8 GB machine |
+| `qwen3:8b` | `ollama pull qwen3:8b` | 5.2 GB | Fast, stronger at following instructions |
+| `gemma4:12b` | `ollama pull gemma4:12b` | ~8 GB | Deep default on a 16 GB machine |
+| `qwen3:14b` | `ollama pull qwen3:14b` | 9.3 GB | Deep alternative, 16 GB and up |
+
+Sizing rule: keep the model file under roughly half your RAM and leave the rest for the context window. A document generation sends the base resume, the verified claims and the posting in one prompt, so CareerOS asks for a 24 576-token context by default; raise the context length in Ollama Settings for a long base resume. All four models above support a large enough context.
+
+Avoid models below about 3B for documents, and avoid reasoning-only or uncensored fine-tunes: they tend to answer in commentary or refuse the required shape, which the guardrails reject after one retry. If a document fails on the same defect twice, try a larger deep model before editing your claims.
+
 ### First Launch
 1. Launch CareerOS from your installed application
 2. Complete the Setup Wizard:

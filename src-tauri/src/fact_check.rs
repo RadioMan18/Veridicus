@@ -169,26 +169,36 @@ pub(crate) fn employer_consistency_warnings(
     warnings
 }
 
+/// A metric may be written in digits or in words ('9 years', 'nine years');
+/// the ledger and the draft do not always agree, so both forms are extracted.
+const NUMBER_WORD_PATTERN: &str = r"(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|hundred|thousand)";
+
+/// The qualifier is captured with the number so the report can quote it and the
+/// verifier can tell a dropped ceiling from a dropped floor.
+const QUALIFIER_PATTERN: &str = r"(?:up to|under|less than|at most|over|more than|at least|about|approximately|approx\.?|around|close to|~)?\s*";
+
 /// Extract all metrics from draft text with qualifiers preserved.
 pub(crate) fn extract_metrics(text: &str) -> Vec<ExtractedMetric> {
-    let patterns: &[(&str, &str)] = &[
+    let number = NUMBER_WORD_PATTERN;
+    let qualifier = QUALIFIER_PATTERN;
+    let patterns: Vec<(String, &str)> = vec![
         // Percentages with qualifiers
-        (r"(?i)(up to|about|approximately|approx\.?|~)?\s*\d+(?:\.\d+)?\s*%", "percentage"),
+        (format!(r"(?i){qualifier}\b(?:\d+(?:\.\d+)?\+?|{number}(?:[- ]{number})*)\s*%"), "percentage"),
         // Currency with K/M/B suffixes
-        (r"(?i)(up to|about|approximately|approx\.?|~)?\s*\$?\d[\d,]*(?:\.\d+)?\s*(?:k\b|m\b|b\b)", "currency"),
+        (format!(r"(?i){qualifier}\$?\d[\d,]*(?:\.\d+)?\+?\s*(?:k\b|m\b|b\b)"), "currency"),
         // Durations including minutes/hours/days/weeks/months/years
-        (r"(?i)\b\d+(?:\.\d+)?\s*(?:hours?|hrs?|minutes?|mins?|days?|weeks?|months?|years?)\b", "duration"),
+        (format!(r"(?i){qualifier}\b(?:\d+(?:\.\d+)?\+?|{number}(?:[- ]{number})*)\s*(?:hours?|hrs?|minutes?|mins?|days?|weeks?|months?|years?)\b"), "duration"),
         // Multipliers
-        (r"(?i)\b\d+(?:\.\d+)?\s*x\b", "multiplier"),
+        (format!(r"(?i)\b(?:\d+(?:\.\d+)?\+?|{number})\s*x\b"), "multiplier"),
         // Fractions "X of Y"
-        (r"(?i)\b\d+\s+of\s+\d+\b", "fraction"),
+        (r"(?i)\b\d+\s+of\s+\d+\b".to_string(), "fraction"),
         // Plain counts with context
-        (r"(?i)\b\d+(?:\.\d+)?\s+(?:users|customers|clients|projects|servers|deployments)\b", "count"),
+        (format!(r"(?i){qualifier}\b(?:\d+(?:\.\d+)?\+?|{number}(?:[- ]{number})*)\s+(?:users|customers|clients|projects|servers|deployments)\b"), "count"),
     ];
 
     let mut metrics = Vec::new();
 
-    for (pattern_str, _kind) in patterns {
+    for (pattern_str, _kind) in &patterns {
         if let Ok(re) = Regex::new(pattern_str) {
             for mat in re.find_iter(text) {
                 let raw = mat.as_str().to_string();
@@ -209,22 +219,186 @@ pub(crate) fn extract_metrics(text: &str) -> Vec<ExtractedMetric> {
     metrics
 }
 
+/// A ceiling caps the claim; dropping it overstates. A floor only raises the
+/// low end; dropping it understates, which is still honest.
+const CEILING_QUALIFIERS: &[&str] = &[
+    "up to",
+    "under",
+    "less than",
+    "at most",
+    "nearly",
+    "about",
+    "approximately",
+    "approx.",
+    "approx",
+    "around",
+    "close to",
+    "~",
+];
+
+const FLOOR_QUALIFIERS: &[&str] = &["over", "more than", "at least", "plus", "upwards of"];
+
 /// Extract qualifier word from metric text (e.g. "up to", "about", "approximately").
 fn extract_qualifier(text: &str) -> Option<String> {
-    let lower = text.to_lowercase();
-    if lower.starts_with("up to") {
-        return Some("up to".to_string());
+    let lower = text.trim().to_lowercase();
+    for qualifier in CEILING_QUALIFIERS.iter().chain(FLOOR_QUALIFIERS.iter()) {
+        if lower.starts_with(qualifier) {
+            return Some((*qualifier).to_string());
+        }
     }
-    if lower.starts_with("about") {
-        return Some("about".to_string());
-    }
-    if lower.starts_with("approximately") || lower.starts_with("approx") {
-        return Some("approximately".to_string());
-    }
-    if lower.starts_with("~") {
-        return Some("~".to_string());
+    if lower.contains('+') {
+        return Some("+".to_string());
     }
     None
+}
+
+fn qualifier_family(qualifier: Option<&str>) -> Option<&'static str> {
+    let qualifier = qualifier?;
+    let qualifier = qualifier.to_lowercase();
+    if FLOOR_QUALIFIERS.iter().any(|floor| *floor == qualifier) || qualifier == "+" {
+        return Some("floor");
+    }
+    if CEILING_QUALIFIERS.iter().any(|ceiling| *ceiling == qualifier) {
+        return Some("ceiling");
+    }
+    None
+}
+
+fn number_word(token: &str) -> Option<f64> {
+    let token = token.trim_matches(|character: char| !character.is_ascii_alphabetic());
+    Some(match token {
+        "zero" => 0.0,
+        "one" => 1.0,
+        "two" => 2.0,
+        "three" => 3.0,
+        "four" => 4.0,
+        "five" => 5.0,
+        "six" => 6.0,
+        "seven" => 7.0,
+        "eight" => 8.0,
+        "nine" => 9.0,
+        "ten" => 10.0,
+        "eleven" => 11.0,
+        "twelve" => 12.0,
+        "thirteen" => 13.0,
+        "fourteen" => 14.0,
+        "fifteen" => 15.0,
+        "sixteen" => 16.0,
+        "seventeen" => 17.0,
+        "eighteen" => 18.0,
+        "nineteen" => 19.0,
+        "twenty" => 20.0,
+        "thirty" => 30.0,
+        "forty" => 40.0,
+        "fifty" => 50.0,
+        "sixty" => 60.0,
+        "seventy" => 70.0,
+        "eighty" => 80.0,
+        "ninety" => 90.0,
+        "hundred" => 100.0,
+        "thousand" => 1_000.0,
+        _ => return None,
+    })
+}
+
+fn split_leading_number(token: &str) -> Option<(f64, String)> {
+    let digits: String = token
+        .chars()
+        .take_while(|character| character.is_ascii_digit() || *character == '.')
+        .collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let value: f64 = digits.parse().ok()?;
+    Some((value, token[digits.len()..].to_string()))
+}
+
+fn canonical_unit(unit: &str) -> String {
+    let word: String = unit
+        .chars()
+        .filter(|character| character.is_alphanumeric() || *character == '%')
+        .collect::<String>()
+        .to_lowercase();
+    let word = word.trim_start_matches(|character: char| character.is_ascii_digit() || character == '.');
+    match word {
+        "%" | "percent" | "pct" => "percent".to_string(),
+        "x" => "multiplier".to_string(),
+        "min" | "mins" | "minute" | "minutes" => "minute".to_string(),
+        "hr" | "hrs" | "hour" | "hours" => "hour".to_string(),
+        "day" | "days" => "day".to_string(),
+        "week" | "weeks" => "week".to_string(),
+        "month" | "months" => "month".to_string(),
+        "yr" | "yrs" | "year" | "years" => "year".to_string(),
+        "" => String::new(),
+        other => other.trim_end_matches('s').to_string(),
+    }
+}
+
+/// A metric reduced to the number and the unit it counts, independent of how it
+/// was spelled: '5 minutes' and 'five minutes' are the same fact, and so are
+/// '500 clients' and '500+ clients'.
+fn metric_key(raw: &str) -> Option<(f64, String)> {
+    let cleaned: String = raw
+        .to_lowercase()
+        .chars()
+        .map(|character| {
+            if character == '$' || character == ',' {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    let mut body = cleaned.trim().to_string();
+    for qualifier in CEILING_QUALIFIERS.iter().chain(FLOOR_QUALIFIERS.iter()) {
+        if let Some(rest) = body.strip_prefix(qualifier) {
+            // Only a whole word counts: 'underwriter' is not an 'under' qualifier.
+            if rest.chars().next().map(|character| !character.is_ascii_alphabetic()).unwrap_or(true) {
+                body = rest.trim_start().to_string();
+                break;
+            }
+        }
+    }
+    let tokens: Vec<&str> = body.split_whitespace().collect();
+    if tokens.is_empty() {
+        return None;
+    }
+
+    let mut value = 0.0;
+    let mut consumed = 0usize;
+    let mut leading_rest = String::new();
+    while consumed < tokens.len() {
+        let token = tokens[consumed];
+        if consumed == 0 {
+            if let Some((number, rest)) = split_leading_number(token) {
+                value = number;
+                leading_rest = rest;
+                consumed += 1;
+                break;
+            }
+        }
+        match number_word(token) {
+            Some(number) => {
+                if number >= 100.0 && value > 0.0 {
+                    value *= number;
+                } else {
+                    value += number;
+                }
+                consumed += 1;
+            }
+            None => break,
+        }
+    }
+    if consumed == 0 {
+        return None;
+    }
+
+    let unit = if leading_rest.chars().any(|character| character.is_alphabetic() || character == '%') {
+        leading_rest
+    } else {
+        tokens[consumed..].join(" ")
+    };
+    Some((value, canonical_unit(&unit)))
 }
 
 /// Compute AST structural diff using comrak against draft content.
@@ -307,34 +481,29 @@ pub(crate) struct MetricVerification {
     pub verified: usize,
 }
 
-fn metric_value(raw: &str) -> String {
-    let lowered = raw.trim().to_lowercase();
-    for qualifier in ["up to", "about", "approximately", "approx.", "approx", "~"] {
-        if let Some(rest) = lowered.strip_prefix(qualifier) {
-            return rest.trim().to_string();
-        }
-    }
-    lowered
-}
-
 pub(crate) fn verify_metrics(draft: &str, claims: &[Claim]) -> MetricVerification {
-    let claim_metrics: Vec<(String, Option<String>)> = claims
+    let claim_metrics: Vec<((f64, String), Option<String>)> = claims
         .iter()
         .flat_map(|claim| {
             extract_metrics(&claim.confirmed_wording)
                 .into_iter()
                 .chain(extract_metrics(&claim.statement))
         })
-        .map(|metric| (metric_value(&metric.raw), metric.qualifier))
+        .filter_map(|metric| metric_key(&metric.raw).map(|key| (key, metric.qualifier)))
         .collect();
 
     let mut verification = MetricVerification::default();
     for metric in extract_metrics(draft) {
         verification.found += 1;
-        let value = metric_value(&metric.raw);
+        let Some(key) = metric_key(&metric.raw) else {
+            verification.unverified.push(metric.raw);
+            continue;
+        };
         let matches: Vec<Option<String>> = claim_metrics
             .iter()
-            .filter(|(claim_value, _)| *claim_value == value)
+            .filter(|(claim_key, _)| {
+                (claim_key.0 - key.0).abs() < 0.001 && claim_key.1 == key.1
+            })
             .map(|(_, qualifier)| qualifier.clone())
             .collect();
 
@@ -345,18 +514,29 @@ pub(crate) fn verify_metrics(draft: &str, claims: &[Claim]) -> MetricVerificatio
 
         if matches.iter().any(|qualifier| qualifier.as_deref() == metric.qualifier.as_deref()) {
             verification.verified += 1;
-        } else {
-            let confirmed: Vec<String> = matches.into_iter().flatten().collect();
-            let confirmed = if confirmed.is_empty() {
-                "no qualifier".to_string()
-            } else {
-                confirmed.join(" / ")
-            };
-            verification.qualifier_violations.push(format!(
-                "'{}' drops or changes the confirmed qualifier ({})",
-                metric.raw, confirmed
-            ));
+            continue;
         }
+
+        // Dropping a floor ("500+" written as "500") understates the confirmed
+        // claim, which is honest; dropping a ceiling overstates it.
+        let claim_is_floor = matches
+            .iter()
+            .all(|qualifier| qualifier_family(qualifier.as_deref()) == Some("floor"));
+        if claim_is_floor && metric.qualifier.is_none() {
+            verification.verified += 1;
+            continue;
+        }
+
+        let confirmed: Vec<String> = matches.into_iter().flatten().collect();
+        let confirmed = if confirmed.is_empty() {
+            "no qualifier".to_string()
+        } else {
+            confirmed.join(" / ")
+        };
+        verification.qualifier_violations.push(format!(
+            "'{}' drops or changes the confirmed qualifier ({})",
+            metric.raw, confirmed
+        ));
     }
 
     verification
@@ -406,6 +586,49 @@ mod metric_tests {
     fn unsupported_number_is_unverified() {
         let report = verify_metrics("saved $4.2m", &[claim("Saved $1.2m")]);
         assert_eq!(report.unverified.len(), 1);
+    }
+
+    #[test]
+    fn a_metric_spelled_in_words_matches_the_same_metric_in_digits() {
+        let report = verify_metrics(
+            "cut asset search time to under 5 minutes and bring 9 years of enablement",
+            &[claim("Cut asset search time to under five minutes and brings nine years of enablement")],
+        );
+        assert!(report.unverified.is_empty(), "unverified: {:?}", report.unverified);
+        assert!(report.qualifier_violations.is_empty(), "{:?}", report.qualifier_violations);
+    }
+
+    #[test]
+    fn the_reported_metrics_match_their_claim_spellings() {
+        let report = verify_metrics(
+            "cut asset search to under 5 minutes, 9 Years in enablement, and 500 clients served",
+            &[
+                claim("Cut asset search time to under five minutes"),
+                claim("Brings nine years in enablement"),
+                claim("Served 500+ clients"),
+            ],
+        );
+        assert!(report.unverified.is_empty(), "unverified: {:?}", report.unverified);
+        assert!(report.qualifier_violations.is_empty(), "{:?}", report.qualifier_violations);
+    }
+
+    #[test]
+    fn a_dropped_floor_understates_rather_than_overstates() {
+        let report = verify_metrics(
+            "supported 500 clients across the portfolio",
+            &[claim("Supported 500+ clients across the portfolio")],
+        );
+        assert!(report.unverified.is_empty(), "unverified: {:?}", report.unverified);
+        assert!(report.qualifier_violations.is_empty(), "{:?}", report.qualifier_violations);
+    }
+
+    #[test]
+    fn word_hundreds_and_thousands_fold_to_one_number() {
+        let report = verify_metrics(
+            "reached 500 clients",
+            &[claim("Reached five hundred clients")],
+        );
+        assert!(report.unverified.is_empty(), "unverified: {:?}", report.unverified);
     }
 
     #[test]

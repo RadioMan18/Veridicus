@@ -244,17 +244,64 @@ pub fn weak_provenance_findings(claims: &[Claim], cited: &[String]) -> Vec<Guard
     findings
 }
 
+/// Words that describe the posting's instructions or the resume's own furniture
+/// rather than the missing skill itself. They would otherwise dominate the match
+/// on a requirement written as a task.
+const GAP_FILLER_WORDS: &[&str] = &[
+    "define", "build", "work", "works", "working", "develop", "create", "partner",
+    "collaborate", "lead", "support", "manage", "help", "deliver", "delivery", "ensure",
+    "provide", "drive", "own", "implement", "establish", "design", "maintain", "execute",
+    "coordinate", "prioritize", "contribute", "including", "include", "across", "within",
+    "using", "use", "new", "existing", "concretely", "mean", "means", "role", "roles",
+    "priority", "priorities", "team", "teams", "artifact", "artifacts", "education",
+    "program", "programs", "ability", "experience", "strong", "excellent", "preferred",
+    "required", "such", "via", "per", "each", "their", "them",
+];
+
+/// The distinctive words of a requirement, in order, with the posting's
+/// instruction verbs removed.
+fn gap_keywords(requirement: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    content_words(requirement)
+        .into_iter()
+        .filter(|word| !GAP_FILLER_WORDS.contains(&word.as_str()))
+        .filter(|word| seen.insert(word.clone()))
+        .take(5)
+        .collect()
+}
+
+/// A requirement the posting states as a responsibility rather than a skill
+/// ("Define, for each priority role, what 'AI-enabled' means ...") names nothing
+/// a letter could name as a gap, so it is advisory rather than blocking.
+pub fn gap_requires_naming(requirement: &str) -> bool {
+    let normalized = normalize(requirement);
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    if words.len() < 12 {
+        return true;
+    }
+    const TASK_OPENERS: &[&str] = &[
+        "define", "build", "create", "develop", "work", "partner", "collaborate", "design",
+        "implement", "manage", "lead", "support", "help", "deliver", "establish", "drive",
+        "own", "ensure", "provide", "coordinate", "maintain", "execute", "translate",
+    ];
+    !words
+        .first()
+        .map(|first| TASK_OPENERS.contains(first))
+        .unwrap_or(false)
+}
+
 /// True when the draft names a required gap in one sentence beside an adjacent strength.
 pub fn gap_named(draft: &str, requirement: &str) -> bool {
     let draft_lower = draft.to_lowercase();
-    if draft_lower.contains(&requirement.to_lowercase()) {
+    if !requirement.trim().is_empty() && draft_lower.contains(&requirement.to_lowercase()) {
         return true;
     }
 
-    let keywords = content_words(requirement);
+    let keywords = gap_keywords(requirement);
     if keywords.is_empty() {
         return false;
     }
+    let needed = if keywords.len() >= 3 { 2 } else { keywords.len() };
 
     draft_lower
         .split(|character| matches!(character, '.' | '!' | '?' | '\n'))
@@ -264,8 +311,31 @@ pub fn gap_named(draft: &str, requirement: &str) -> bool {
                 .iter()
                 .filter(|keyword| sentence.contains(keyword.as_str()))
                 .count();
-            hits * 100 / keywords.len() >= 50
+            hits >= needed || hits * 100 / keywords.len() >= 50
         })
+}
+
+/// True when the draft mentions a name: verbatim, or by most of its distinctive
+/// words. A role posted as "Senior Learning Performance Consultant, GTM" is named
+/// by "... the Senior Learning Performance Consultant role".
+fn mentions_value(draft: &str, value: &str) -> bool {
+    let value = value.trim().to_lowercase();
+    if value.is_empty() {
+        return true;
+    }
+    if draft.to_lowercase().contains(&value) {
+        return true;
+    }
+    let wanted = content_words(&value);
+    if wanted.is_empty() {
+        return false;
+    }
+    let draft_normalized = normalize(draft);
+    let present = wanted
+        .iter()
+        .filter(|word| contains_word(&draft_normalized, word))
+        .count();
+    present * 100 / wanted.len() >= 60
 }
 
 fn best_matching_claim<'a>(sentence: &str, claims: &'a [Claim]) -> Option<&'a Claim> {
@@ -305,13 +375,57 @@ fn finalize(mut report: GuardrailReport) -> GuardrailReport {
     report
 }
 
-/// Sections whose bullets are keyword lists or credentials rather than statements
-/// of experience.
+/// Section headings whose bullets are credentials or keyword lists rather than
+/// statements of experience. Matched as substrings because the resume writes
+/// combined headings such as "Certifications & Key Achievements".
+const LIST_SECTION_HINTS: &[&str] = &[
+    "education",
+    "certif",
+    "credential",
+    "license",
+    "licensure",
+    "award",
+    "achievement",
+    "honor",
+    "publication",
+    "language",
+    "skill",
+    "competen",
+    "expertise",
+    "affiliation",
+];
+
 fn is_list_section(section: &str) -> bool {
-    matches!(section, "education" | "certifications" | "certificates")
-        || section.contains("skill")
-        || section.contains("competen")
-        || section.contains("expertise")
+    LIST_SECTION_HINTS
+        .iter()
+        .any(|hint| section.contains(*hint))
+}
+
+/// Verbs that make a bullet a statement of work rather than a theme heading.
+const ACTION_VERBS: &[&str] = &[
+    "led", "lead", "built", "build", "created", "designed", "developed", "delivered",
+    "taught", "owned", "drove", "increased", "reduced", "cut", "grew", "managed",
+    "implemented", "trained", "launched", "produced", "wrote", "presented", "helped",
+    "partnered", "achieved", "improved", "saved", "scaled", "coached", "mentored",
+    "established", "founded", "streamlined", "migrated", "automated", "supported", "ran",
+    "run", "operated", "maintained", "reorganized", "analyzed", "authored", "facilitated",
+    "onboarded", "negotiated", "secured", "raised", "earned", "served", "serve", "created",
+];
+
+/// A short noun phrase with no verb states no fact of its own; the resume uses
+/// these as group headings ("Cross-functional leadership experience").
+fn is_theme_heading(text: &str) -> bool {
+    if text.contains(':') || text.chars().any(|character| character.is_ascii_digit()) {
+        return false;
+    }
+    let normalized = normalize(text);
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    if words.is_empty() || words.len() > 5 {
+        return false;
+    }
+    !words
+        .iter()
+        .any(|word| ACTION_VERBS.contains(word))
 }
 
 /// The part of a bullet that makes a factual statement: the text after a short
@@ -335,6 +449,127 @@ fn bullet_statement(bullet: &str) -> Option<&str> {
     }
 }
 
+/// Credentials, badges and community entries name a thing the user holds or did;
+/// they are not statements of work, so they are judged by the list-section rule
+/// rather than as experience claims.
+const CREDENTIAL_HINTS: &[&str] = &[
+    "certification",
+    "certifications",
+    "certificate",
+    "certified",
+    "credential",
+    "badge",
+    "award",
+    "honor",
+    "license",
+    "licensure",
+    "scholarship",
+    "affiliation",
+    "publication",
+    "community",
+];
+
+fn strip_emphasis(text: &str) -> String {
+    text.trim()
+        .trim_matches(|character| matches!(character, '*' | '_'))
+        .trim()
+        .to_string()
+}
+
+fn has_action_verb(text: &str) -> bool {
+    normalize(text)
+        .split_whitespace()
+        .any(|word| ACTION_VERBS.contains(&word))
+}
+
+/// A line that is resume furniture rather than a fact about work: a heading set
+/// in bold with nothing after it, a theme phrase, or a credential with no verb.
+fn is_structure_line(bullet: &str) -> bool {
+    let trimmed = bullet.trim();
+    let plain = strip_emphasis(trimmed);
+    if plain.is_empty() {
+        return true;
+    }
+    // A bolded sentence still states something, so it is judged like any bullet;
+    // only a bold noun phrase is a heading.
+    if has_action_verb(&plain) {
+        return false;
+    }
+    if is_theme_heading(&plain) {
+        return true;
+    }
+    let lower = plain.to_lowercase();
+    if CREDENTIAL_HINTS.iter().any(|hint| lower.contains(hint)) {
+        return true;
+    }
+    trimmed.starts_with("**")
+        && trimmed.ends_with("**")
+        && trimmed.matches("**").count() == 2
+        && plain.split_whitespace().count() <= 12
+        && !plain.ends_with('.')
+}
+
+/// The first line that opens with a greeting, wherever the letterhead puts it.
+fn leading_salutation(draft: &str) -> Option<&str> {
+    draft
+        .lines()
+        .map(str::trim)
+        .find(|line| line.len() <= 80 && line.to_lowercase().starts_with("dear "))
+}
+
+/// Words that name the recipient's function rather than a company, so "Dear
+/// Hiring Manager," is not read as a company called Hiring Manager.
+const SALUTATION_GENERIC_WORDS: &[&str] = &[
+    "hiring",
+    "team",
+    "teams",
+    "manager",
+    "managers",
+    "recruiter",
+    "recruiters",
+    "recruiting",
+    "talent",
+    "acquisition",
+    "department",
+    "human",
+    "resources",
+    "hr",
+    "sir",
+    "madam",
+    "folks",
+    "everyone",
+    "the",
+    "and",
+    "of",
+    "at",
+];
+
+/// True when the greeting names a company other than the employer.
+fn salutation_names_other_company(salutation: &str, employer: &str) -> bool {
+    let salutation_lower = salutation.to_lowercase();
+    let employer = employer.trim().to_lowercase();
+    if employer.is_empty() || salutation_lower.contains(&employer) {
+        return false;
+    }
+    let named: Vec<&str> = salutation_lower
+        .trim_start_matches("dear")
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| word.len() > 2)
+        .filter(|word| !SALUTATION_GENERIC_WORDS.contains(word))
+        .collect();
+    if named.is_empty() {
+        return false;
+    }
+    // "Dear Acme team," still names Acme when the posting calls it "Acme Inc".
+    if employer
+        .split_whitespace()
+        .any(|word| word.len() > 2 && named.contains(&word))
+    {
+        return false;
+    }
+    true
+}
+
 fn ungrounded_resume_bullets(draft: &str, claims: &[Claim]) -> Vec<String> {
     let mut findings = Vec::new();
     let mut section = String::new();
@@ -355,12 +590,21 @@ fn ungrounded_resume_bullets(draft: &str, claims: &[Claim]) -> Vec<String> {
             continue;
         }
         let bullet = trimmed.trim_start_matches("- ").trim();
+        // A bold-only heading, a theme phrase or a credential states no fact of
+        // its own, so it is not an ungrounded claim about work.
+        if is_structure_line(bullet) {
+            continue;
+        }
         // A bullet may open with its own label ("Sunrise EHR Documentation:
         // Maintained ..."); the label is a heading, so judge the statement after it.
         let Some(statement) = bullet_statement(bullet) else {
             continue;
         };
         if statement.len() < 20 {
+            continue;
+        }
+        // A short noun phrase is a group heading, not a claim about work.
+        if is_theme_heading(statement) {
             continue;
         }
         if !is_grounded(statement, claims) {
@@ -509,11 +753,14 @@ pub fn evaluate_document(
             }
             report.checks_run += 1;
             if !gap_named(draft, &gap.requirement) {
+                // A responsibility written as a task names no missing skill, so it
+                // stays visible without stopping an otherwise honest letter.
+                let blocking = gap_requires_naming(&gap.requirement);
                 push(
                     &mut report,
                     "gap_not_named",
                     format!("the letter must name this gap: {}", gap.requirement),
-                    true,
+                    blocking,
                 );
             }
         }
@@ -527,11 +774,29 @@ pub fn evaluate_document(
                 continue;
             }
             report.checks_run += 1;
-            if !draft_lower.contains(&value.to_lowercase()) {
+            if !mentions_value(draft, value) {
                 push(
                     &mut report,
                     "role_company_mismatch",
                     format!("the letter does not name the {}", label),
+                    true,
+                );
+            }
+        }
+
+        // A greeting that names somebody else's company is the one place a wrong
+        // employer is not caught by the checks above: the header can carry the
+        // right name while the salutation still says "Dear Aurora".
+        if let (Some(employer), Some(salutation)) = (employer, leading_salutation(draft)) {
+            report.checks_run += 1;
+            if salutation_names_other_company(salutation, employer) {
+                push(
+                    &mut report,
+                    "role_company_mismatch",
+                    format!(
+                        "the letter greets a different employer: '{}'",
+                        salutation.trim()
+                    ),
                     true,
                 );
             }
@@ -1113,6 +1378,81 @@ mod tests {
     }
 
     #[test]
+    fn a_role_named_without_its_trailing_qualifier_is_still_named() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "Dear Acme Hiring Team,\n\nI am applying for the Senior Learning Performance Consultant role.",
+            &[claim("Applying for the role")],
+            &[],
+            Some("Acme"),
+            Some("Senior Learning Performance Consultant, GTM"),
+            &[],
+        );
+
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "role_company_mismatch"),
+            "findings: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn a_requirement_written_as_a_task_is_advisory() {
+        let report = evaluate_document(
+            COVER_LETTER,
+            "Acme needs an Engineer. I built AI tooling for training teams.",
+            &[claim("Built AI tooling for training teams")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[gap(
+                "Define, for each priority role, what 'AI-enabled' concretely means in the workflow, and build the artifacts that deliver it",
+            )],
+        );
+
+        assert!(!report.blocking, "findings: {:?}", report.findings);
+        assert!(report
+            .findings
+            .iter()
+            .any(|finding| finding.code == "gap_not_named" && !finding.blocking));
+    }
+
+    #[test]
+    fn certification_and_achievement_bullets_are_not_experience_claims() {
+        let draft = "## Certifications & Key Achievements\n- Six Sigma Green Belt Certification (08/2007)\n- Altera Company-Wide Innovation Badge\n- AI Community Building\n";
+        let report = evaluate_document(
+            RESUME,
+            draft,
+            &[claim("Built a telemetry pipeline used by twelve teams")],
+            &[],
+            None,
+            None,
+            &[],
+        );
+
+        assert!(report.findings.is_empty(), "findings: {:?}", report.findings);
+    }
+
+    #[test]
+    fn group_headings_are_not_treated_as_experience_bullets() {
+        let draft = "## Additional Leadership\n- Cross-functional leadership experience\n- Leadership impact outside dated roles\n- Led a cross-country team of 40 trainers through a merger\n";
+        let report = evaluate_document(
+            RESUME,
+            draft,
+            &[claim("Led a cross-country team of 40 trainers through a merger")],
+            &[],
+            None,
+            None,
+            &[],
+        );
+
+        assert!(report.findings.is_empty(), "findings: {:?}", report.findings);
+    }
+
+    #[test]
     fn invented_resume_bullet_blocks_but_education_is_skipped() {
         let draft = "# Jane\n\n## Experience\n- Built a telemetry pipeline used by twelve teams\n- Invented a company-wide platform nobody confirmed\n\n## Education\n- B.S. Computer Science, 2014";
         let report = evaluate_document(
@@ -1164,6 +1504,97 @@ mod tests {
         );
 
         assert!(report.findings.is_empty(), "findings: {:?}", report.findings);
+    }
+
+    #[test]
+    fn resume_headings_and_credentials_are_not_bullets() {
+        let draft = "## Additional Leadership\n- **Cross-functional leadership experience**\n- **Cross-country leadership experience**\n- **Leadership impact outside dated roles**\n- **Six Sigma Green Belt Certification (08/2007)**\n- **Altera Company-Wide Innovation Badge**\n- **AI Community Building**\n";
+        let report = evaluate_document(
+            RESUME,
+            draft,
+            &[claim("Led the training program")],
+            &[],
+            None,
+            None,
+            &[],
+        );
+
+        let ungrounded: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.code == "ungrounded_bullet")
+            .collect();
+        assert!(ungrounded.is_empty(), "findings: {:?}", ungrounded);
+    }
+
+    #[test]
+    fn a_bolded_sentence_is_still_checked() {
+        let draft =
+            "## Experience\n- **Built a company-wide platform nobody confirmed for the whole division**\n";
+        let report = evaluate_document(
+            RESUME,
+            draft,
+            &[claim("Led the training program")],
+            &[],
+            None,
+            None,
+            &[],
+        );
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ungrounded_bullet"),
+            "findings: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn a_letter_greeting_another_company_blocks() {
+        let draft = "**DAVID W. BOUKNIGHT**\n\n**Senior Learning Performance Consultant, GTM**\n\n**iCIMS**\n\nDear Aurora Hiring Team,\n\nI cut reporting costs by 12%.";
+        let report = evaluate_document(
+            COVER_LETTER,
+            draft,
+            &[claim("Cut reporting costs by 12%")],
+            &[],
+            Some("iCIMS"),
+            Some("Senior Learning Performance Consultant, GTM"),
+            &[],
+        );
+
+        assert!(
+            report.findings.iter().any(|finding| finding.code
+                == "role_company_mismatch"
+                && finding.message.contains("Aurora")),
+            "findings: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn a_task_style_requirement_is_advisory_not_blocking() {
+        let requirement = "Define, for each priority role, what 'AI-enabled' concretely means in the workflow — which decisions, which reports, which repetitive steps — and build the artifacts, or work with the teams to build the artifacts and education that deliver it.";
+        let report = evaluate_document(
+            COVER_LETTER,
+            "Dear Acme Hiring Team,\n\nIn my Engineer role I cut reporting costs by 12%.",
+            &[claim("Cut reporting costs by 12%")],
+            &[],
+            Some("Acme"),
+            Some("Engineer"),
+            &[gap(requirement)],
+        );
+
+        assert!(!report.blocking, "findings: {:?}", report.findings);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "gap_not_named" && !finding.blocking),
+            "findings: {:?}",
+            report.findings
+        );
     }
 
     #[test]
