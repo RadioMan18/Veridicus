@@ -205,6 +205,92 @@ fn push_question(
     });
 }
 
+/// A resume line that is short enough to ask about. Longer wording is a summary
+/// or profile paragraph, and reading it back at the candidate is not a question.
+const MAX_SUBJECT_WORDS: usize = 30;
+
+/// Drop a leading markdown bullet, heading mark or bold label, so a question
+/// quotes the accomplishment rather than the label in front of it.
+fn strip_label(raw: &str) -> String {
+    let mut text = raw.trim();
+    loop {
+        if let Some(rest) = text
+            .strip_prefix("- ")
+            .or_else(|| text.strip_prefix("* "))
+            .or_else(|| text.strip_prefix("• "))
+        {
+            text = rest.trim_start();
+            continue;
+        }
+        if text.starts_with('#') {
+            text = text.trim_start_matches('#').trim_start();
+            continue;
+        }
+        break;
+    }
+    let trimmed = text;
+    if let Some(rest) = trimmed.strip_prefix("**") {
+        if let Some(end) = rest.find("**") {
+            let after = rest[end + 2..]
+                .trim_start_matches(|character: char| {
+                    character == ':'
+                        || character == '-'
+                        || character == '—'
+                        || character.is_whitespace()
+                })
+                .trim();
+            if !after.is_empty() {
+                return after.to_string();
+            }
+        }
+    }
+    trimmed.to_string()
+}
+
+/// The claim as a first-person clause ("reduced planning time from eight hours
+/// to thirty minutes"), or `None` when it is not one accomplishment. Summary
+/// paragraphs, tenure lines and multi-sentence blobs are skipped rather than
+/// pasted into a question.
+fn claim_subject(claim: &Claim) -> Option<String> {
+    if claim.category == "tenure" {
+        return None;
+    }
+    let raw = if claim.confirmed_wording.trim().is_empty() {
+        claim.statement.trim()
+    } else {
+        claim.confirmed_wording.trim()
+    };
+    let text = strip_label(raw);
+    let cleaned = text
+        .trim()
+        .trim_end_matches(|character: char| matches!(character, '.' | ';' | ',' | ':'))
+        .trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let lower = cleaned.to_lowercase();
+    if lower.contains("years of experience") || lower.contains("year of experience") {
+        return None;
+    }
+
+    let sentences = cleaned
+        .split(|character: char| matches!(character, '.' | '!' | '?'))
+        .filter(|sentence| sentence.split_whitespace().count() >= 3)
+        .count();
+    if sentences > 1 || cleaned.split_whitespace().count() > MAX_SUBJECT_WORDS {
+        return None;
+    }
+
+    let clause = cleaned
+        .strip_prefix("I ")
+        .or_else(|| cleaned.strip_prefix("i "))
+        .unwrap_or(cleaned);
+    let mut characters = clause.chars();
+    let first = characters.next()?;
+    Some(format!("{}{}", first.to_lowercase(), characters.as_str()))
+}
+
 /// Build the bank deterministically: three groups, five prompts each.
 pub(crate) fn assemble_questions(
     jd_text: &str,
@@ -231,30 +317,51 @@ pub(crate) fn assemble_questions(
             vec![gap.id.clone()],
         );
     }
-    for claim in claims.iter().take(PER_GROUP) {
+    // One accomplishment per question. A summary paragraph, a tenure line, or
+    // the same line recorded twice is not asked about: the interview should ask
+    // about the work, not demand a defence of the resume's opening paragraph.
+    let mut asked: HashSet<String> = HashSet::new();
+    let mut from_claims = 0usize;
+    for claim in claims {
+        if from_claims >= PER_GROUP {
+            break;
+        }
+        let Some(subject) = claim_subject(claim) else {
+            continue;
+        };
+        if !asked.insert(subject.to_lowercase()) {
+            continue;
+        }
         push_question(
             &mut questions,
             &mut seen,
             "technical",
             format!(
-                "Tell me how you did this, in concrete terms: {}.",
-                claim.confirmed_wording.trim_end_matches('.')
+                "Your resume says you {}. Walk me through how you did it and what changed as a result.",
+                subject
             ),
             "Answer from this confirmed claim; do not add numbers or tools it does not contain."
                 .to_string(),
             vec![claim.id.clone()],
             Vec::new(),
         );
+        from_claims += 1;
     }
 
     // Behavioral: one prompt per theme, with the claims that can support it.
     for theme in THEMES {
         let supporting = claims_touching_theme(claims, theme);
         let claim_ids: Vec<String> = supporting.iter().map(|claim| claim.id.clone()).collect();
-        let evidence = match supporting.first() {
+        // Quote a claim that reads like one accomplishment; a summary paragraph
+        // would only repeat the resume instead of prompting a story.
+        let quotable = supporting
+            .iter()
+            .find(|claim| claim_subject(claim).is_some())
+            .copied();
+        let evidence = match quotable {
             Some(claim) => format!(
                 "Strong answers cite: \"{}\".",
-                claim.confirmed_wording.trim_end_matches('.')
+                claim.confirmed_wording.trim().trim_end_matches('.')
             ),
             None => format!(
                 "No confirmed story yet for this theme ({}). Say so or build one.",
@@ -317,34 +424,55 @@ pub(crate) fn assemble_questions(
         }
     }
 
-    // Fill any short group so the counts always exist. These carry no facts.
-    let padding: [(&str, &str); 3] = [
+    // Fill any short group so the counts always exist. Every prompt is distinct,
+    // so padding never asks the same question twice with a counter attached.
+    let padding: [(&str, [&str; PER_GROUP]); 3] = [
         (
             "technical",
-            "Which part of this role's technical scope would you need to learn first, and how would you learn it?",
+            [
+                "Which part of this role's technical scope would you need to learn first, and how would you learn it?",
+                "Walk me through a technical decision you made and the trade-off you accepted.",
+                "How do you check that the work you ship actually does what it should?",
+                "Where has a tool or method from this role already shown up in your work?",
+                "Tell me about a time you had to learn a system quickly enough to deliver with it.",
+            ],
         ),
         (
             "behavioral",
-            "Tell me about a decision you made with incomplete information.",
+            [
+                "Tell me about a decision you made with incomplete information.",
+                "Tell me about a time you had to say no to a request, and how you handled it.",
+                "Tell me about a piece of feedback that changed how you work.",
+                "Tell me about a time you had to choose between speed and quality.",
+                "Tell me about a time you had to influence someone without authority.",
+            ],
         ),
         (
             "culture-fit",
-            "What kind of working environment brings out your best work?",
+            [
+                "What kind of working environment brings out your best work?",
+                "How do you prefer to receive feedback, and how do you give it?",
+                "What would make you leave a role in the first year?",
+                "How do you decide what to learn next when the work is not telling you?",
+                "What does a good week of work look like for you?",
+            ],
         ),
     ];
-    for (group, question) in padding {
-        let mut count = questions.iter().filter(|entry| entry.group == group).count();
-        while count < PER_GROUP {
+    for (group, prompts) in padding {
+        for prompt in prompts {
+            let filled = questions.iter().filter(|entry| entry.group == group).count();
+            if filled >= PER_GROUP {
+                break;
+            }
             push_question(
                 &mut questions,
                 &mut seen,
                 group,
-                format!("{} (#{})", question, count + 1),
+                prompt.to_string(),
                 "No posting-specific evidence; answer from confirmed claims.".to_string(),
                 Vec::new(),
                 Vec::new(),
             );
-            count = questions.iter().filter(|entry| entry.group == group).count();
         }
     }
 
@@ -881,6 +1009,100 @@ mod tests {
         assert!(questions
             .iter()
             .all(|entry| ["technical", "behavioral", "culture-fit"].contains(&entry.group.as_str())));
+    }
+
+    fn categorized(wording: &str, category: &str) -> Claim {
+        let mut entry = claim(wording);
+        entry.category = category.to_string();
+        entry
+    }
+
+    fn technical_questions_for(claims: &[Claim]) -> Vec<String> {
+        assemble_questions("", &[], &[], claims, &[])
+            .into_iter()
+            .filter(|question| question.group == "technical")
+            .map(|question| question.question)
+            .collect()
+    }
+
+    const SUMMARY_PARAGRAPH: &str = "Learning and enablement leader with more than a decade of experience building AI-ready training programs, who reduced onboarding time from six weeks to ten days and grew adoption to 4100 learners across a national network of stores and distribution centers.";
+
+    #[test]
+    fn a_summary_paragraph_is_not_asked_back_as_a_question() {
+        let questions = technical_questions_for(&[
+            categorized(SUMMARY_PARAGRAPH, "metric"),
+            categorized(SUMMARY_PARAGRAPH, "tenure"),
+        ]);
+        assert!(
+            questions
+                .iter()
+                .all(|question| !question.contains("Learning and enablement leader")),
+            "{:?}",
+            questions
+        );
+        let distinct: std::collections::HashSet<&str> =
+            questions.iter().map(String::as_str).collect();
+        assert_eq!(distinct.len(), questions.len(), "{:?}", questions);
+    }
+
+    #[test]
+    fn the_same_accomplishment_is_asked_once() {
+        let questions = technical_questions_for(&[
+            categorized("Reduced planning time from eight hours to thirty minutes", "metric"),
+            categorized("Reduced planning time from eight hours to thirty minutes", "metric"),
+        ]);
+        let asked = questions
+            .iter()
+            .filter(|question| question.contains("reduced planning time"))
+            .count();
+        assert_eq!(asked, 1, "{:?}", questions);
+    }
+
+    #[test]
+    fn an_accomplishment_becomes_a_real_question() {
+        let questions = technical_questions_for(&[claim(
+            "Reduced planning time from eight hours to thirty minutes",
+        )]);
+        assert!(
+            questions.iter().any(|question| question
+                == "Your resume says you reduced planning time from eight hours to thirty minutes. Walk me through how you did it and what changed as a result."),
+            "{:?}",
+            questions
+        );
+    }
+
+    #[test]
+    fn a_labelled_bullet_asks_about_the_work_not_the_label() {
+        let questions = technical_questions_for(&[claim(
+            "**Program Design:** Built the curriculum used by 4100 learners",
+        )]);
+        assert!(
+            questions
+                .iter()
+                .any(|question| question.contains("you built the curriculum used by 4100 learners")),
+            "{:?}",
+            questions
+        );
+        assert!(
+            questions.iter().all(|question| !question.contains("**")),
+            "{:?}",
+            questions
+        );
+    }
+
+    #[test]
+    fn a_tenure_line_is_not_a_question() {
+        let questions = technical_questions_for(&[categorized(
+            "Twelve years of experience in learning and development",
+            "tenure",
+        )]);
+        assert!(
+            questions
+                .iter()
+                .all(|question| !question.contains("Twelve years")),
+            "{:?}",
+            questions
+        );
     }
 
     #[test]

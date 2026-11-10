@@ -35,6 +35,13 @@ const MAX_EVIDENCE_CLAIMS: usize = 24;
 
 const FOLLOW_UP_QUESTION: &str = "What was the concrete outcome, and how did you know it worked?";
 
+/// The interviewer voices a run can use. The voice changes the tone of the
+/// reactions and of the coaching prose; it never changes a measured score.
+const PERSONA_SUPPORTIVE: &str = "supportive";
+const PERSONA_PROFESSIONAL: &str = "professional";
+const PERSONA_SKEPTICAL: &str = "skeptical";
+const PERSONA_IMPATIENT: &str = "impatient";
+
 const SITUATION_HINTS: &[&str] = &[
     "when i",
     "at my",
@@ -135,6 +142,8 @@ pub struct MockQuestion {
 pub struct MockPlan {
     pub role: String,
     pub mode: String,
+    /// One of `supportive`, `professional`, `skeptical`, `impatient`.
+    pub persona: String,
     pub questions: Vec<MockQuestion>,
     /// How many confirmed claims the questions can draw on.
     pub grounded_in: usize,
@@ -243,6 +252,52 @@ struct DebriefDraft {
     impression: String,
     #[serde(default)]
     next_steps: Vec<String>,
+}
+
+/// Map whatever the caller typed onto one of the four voices.
+fn normalize_persona(raw: Option<&str>) -> String {
+    match raw.unwrap_or_default().trim().to_lowercase().as_str() {
+        "supportive" | "easy" | "warm" | "friendly" | "encouraging" => {
+            PERSONA_SUPPORTIVE.to_string()
+        }
+        "skeptical" | "sceptical" | "hard" | "tough" | "probing" => {
+            PERSONA_SKEPTICAL.to_string()
+        }
+        "impatient" | "frustrated" | "strict" | "stress" | "hostile" => {
+            PERSONA_IMPATIENT.to_string()
+        }
+        _ => PERSONA_PROFESSIONAL.to_string(),
+    }
+}
+
+/// One-line interviewer reaction, used when no coaching is shown yet.
+fn persona_ack(persona: &str) -> &'static str {
+    match persona {
+        PERSONA_SUPPORTIVE => "Thanks — there is something to work with here.",
+        PERSONA_SKEPTICAL => "Hm. Noted.",
+        PERSONA_IMPATIENT => "Right. Next.",
+        _ => "Thanks — noted. Next question.",
+    }
+}
+
+/// The lead-in for the single follow-up probe.
+fn persona_follow_up_ack(persona: &str) -> &'static str {
+    match persona {
+        PERSONA_SUPPORTIVE => "Good start — let me press on one detail.",
+        PERSONA_SKEPTICAL => "That leaves something unproven — one detail.",
+        PERSONA_IMPATIENT => "That was thin. One detail, quickly.",
+        _ => "Thanks — let me press on one detail.",
+    }
+}
+
+/// The voice the model writes its coaching and debrief prose in.
+fn persona_system(persona: &str) -> &'static str {
+    match persona {
+        PERSONA_SUPPORTIVE => "You are a warm, encouraging interviewer. Lead with what worked, keep criticism gentle but concrete, and never praise an answer that missed the question.",
+        PERSONA_SKEPTICAL => "You are a skeptical interviewer. You are not hostile, but you accept nothing without evidence: name the part of the answer you doubt and say what would settle it.",
+        PERSONA_IMPATIENT => "You are an impatient, time-pressed interviewer. Be terse and direct; cut to the single thing that wasted your time. Never insult the candidate.",
+        _ => "You are a professional interviewer. Be neutral, specific and fair.",
+    }
 }
 
 fn normalize_mode(raw: Option<&str>) -> String {
@@ -610,10 +665,14 @@ async fn request_feedback(
     follow_up_answer: Option<&str>,
     metrics: &AnswerMetrics,
     claims: &[Claim],
+    persona: &str,
     num_ctx: Option<u32>,
 ) -> Result<EvaluationDraft, String> {
-    let system = "You are an interview coach scoring one answer. Base every rating on the candidate's own words. \
-Never invent achievements, numbers, employers, tools or outcomes for the candidate. Return JSON only.";
+    let system = format!(
+        "{} You are also coaching this candidate: base every rating on their own words, and never invent \
+achievements, numbers, employers, tools or outcomes for them. Return JSON only.",
+        persona_system(persona)
+    );
     let messages = vec![
         OllamaChatMessage {
             role: "system".to_string(),
@@ -956,6 +1015,7 @@ pub fn plan_mock_interview(
     role: String,
     application_id: Option<String>,
     mode: Option<String>,
+    persona: Option<String>,
     question_count: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<MockPlan, String> {
@@ -971,6 +1031,7 @@ pub fn plan_mock_interview(
     }
 
     let mode = normalize_mode(mode.as_deref());
+    let persona = normalize_persona(persona.as_deref());
     let contract = format!(
         "{} questions · {} · /skip passes · /retry redoes · /end gives the debrief",
         questions.len(),
@@ -984,6 +1045,7 @@ pub fn plan_mock_interview(
     Ok(MockPlan {
         role,
         mode,
+        persona,
         questions,
         grounded_in: grounded.claims,
         posting_available: grounded.posting_available,
@@ -1076,6 +1138,7 @@ pub fn plan_mock_drill(
     role: String,
     application_id: Option<String>,
     questions: Vec<String>,
+    persona: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<MockPlan, String> {
     let role = role.trim().to_string();
@@ -1096,6 +1159,7 @@ pub fn plan_mock_drill(
     Ok(MockPlan {
         role,
         mode: MODE_COACHING.to_string(),
+        persona: normalize_persona(persona.as_deref()),
         questions: picked,
         grounded_in: grounded.claims,
         posting_available: grounded.posting_available,
@@ -1119,6 +1183,7 @@ pub async fn evaluate_mock_answer(
     answer: String,
     follow_up_answer: Option<String>,
     elapsed_seconds: Option<u64>,
+    persona: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<MockEvaluation, String> {
     if answer.trim().len() < 2 {
@@ -1128,6 +1193,7 @@ pub async fn evaluate_mock_answer(
     }
 
     let mode = normalize_mode(Some(&mode));
+    let persona = normalize_persona(persona.as_deref());
     let combined = match &follow_up_answer {
         Some(extra) if !extra.trim().is_empty() => {
             format!("{}\n{}", answer.trim(), extra.trim())
@@ -1138,7 +1204,7 @@ pub async fn evaluate_mock_answer(
 
     if follow_up_answer.is_none() && needs_follow_up(&metrics) {
         return Ok(MockEvaluation {
-            ack: "Thanks — let me press on one detail.".to_string(),
+            ack: persona_follow_up_ack(&persona).to_string(),
             follow_up: Some(FOLLOW_UP_QUESTION.to_string()),
             feedback: None,
             model_note: None,
@@ -1147,7 +1213,7 @@ pub async fn evaluate_mock_answer(
 
     if mode == MODE_SIMULATION {
         return Ok(MockEvaluation {
-            ack: "Thanks — noted. Next question.".to_string(),
+            ack: persona_ack(&persona).to_string(),
             follow_up: None,
             feedback: None,
             model_note: None,
@@ -1177,6 +1243,7 @@ pub async fn evaluate_mock_answer(
         follow_up_answer.as_deref(),
         &metrics,
         &claims,
+        &persona,
         config.num_ctx,
     )
     .await
@@ -1195,7 +1262,10 @@ pub async fn evaluate_mock_answer(
             })
         }
         Err(error) => Ok(MockEvaluation {
-            ack: "Thanks — here is what I can measure without the model.".to_string(),
+            ack: format!(
+                "{} Here is what I can measure without the model.",
+                persona_ack(&persona)
+            ),
             follow_up: None,
             feedback: Some(fallback),
             model_note: Some(format!("Coaching was scored locally: {}", error)),
@@ -1208,6 +1278,7 @@ async fn request_debrief(
     role: &str,
     turns: &[MockTurnInput],
     scored: &[(usize, MockFeedback)],
+    persona: &str,
     num_ctx: Option<u32>,
 ) -> Result<DebriefDraft, String> {
     let mut prompt = format!("## Role\n{}\n\n## Transcript\n", role);
@@ -1238,8 +1309,11 @@ Use only what appears above; never invent employers, numbers, tools or outcomes.
 Return JSON only: {\"impression\":\"...\",\"next_steps\":[\"...\",\"...\",\"...\"]}.",
     );
 
-    let system = "You are an interviewer writing a debrief after a practice run. Be specific, fair and brief. \
-Never invent facts about the candidate. Return JSON only.";
+    let system = format!(
+        "{} Write this closing debrief in that interviewer's voice. Be specific and brief; never invent facts \
+about the candidate. Return JSON only.",
+        persona_system(persona)
+    );
     let messages = vec![
         OllamaChatMessage {
             role: "system".to_string(),
@@ -1270,6 +1344,7 @@ pub async fn finish_mock_interview(
     role: String,
     mode: Option<String>,
     turns: Vec<MockTurnInput>,
+    persona: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     if turns.is_empty() {
@@ -1299,7 +1374,8 @@ pub async fn finish_mock_interview(
 
     let config = crate::ollama::get_ollama_config(state.clone()).unwrap_or_default();
     let model = model_name(&config);
-    let draft = request_debrief(&model, &role, &turns, &scored, config.num_ctx)
+    let persona = normalize_persona(persona.as_deref());
+    let draft = request_debrief(&model, &role, &turns, &scored, &persona, config.num_ctx)
         .await
         .unwrap_or_default();
 
@@ -1320,7 +1396,8 @@ pub async fn finish_mock_interview(
 #[cfg(test)]
 mod tests {
     use super::{
-        fallback_feedback, measure_answer, needs_follow_up, pick_drill_questions, render_debrief,
+        fallback_feedback, measure_answer, needs_follow_up, normalize_persona, persona_ack,
+        persona_follow_up_ack, persona_system, pick_drill_questions, render_debrief,
         select_questions, MockTurnInput,
     };
     use crate::claims::Claim;
@@ -1405,6 +1482,35 @@ As a result onboarding dropped to nine days and support tickets fell 40 percent.
         assert!(metrics.hedges.contains(&"i think".to_string()));
         assert!(metrics.hedges.contains(&"kind of".to_string()));
         assert!(!metrics.star.result, "no outcome was stated");
+    }
+
+    #[test]
+    fn persona_aliases_select_the_voice_they_describe() {
+        assert_eq!(normalize_persona(Some("easy")), "supportive");
+        assert_eq!(normalize_persona(Some("warm")), "supportive");
+        assert_eq!(normalize_persona(Some("hard")), "skeptical");
+        assert_eq!(normalize_persona(Some("frustrated")), "impatient");
+        assert_eq!(normalize_persona(Some("anything else")), "professional");
+        assert_eq!(normalize_persona(None), "professional");
+    }
+
+    #[test]
+    fn every_persona_has_its_own_voice() {
+        let personas = ["supportive", "professional", "skeptical", "impatient"];
+        for persona in personas {
+            assert!(persona_system(persona).len() > 20, "{persona} needs a voice");
+        }
+        let prompts: std::collections::HashSet<&str> =
+            personas.iter().map(|persona| persona_system(persona)).collect();
+        assert_eq!(prompts.len(), personas.len());
+        let acks: std::collections::HashSet<&str> =
+            personas.iter().map(|persona| persona_ack(persona)).collect();
+        assert_eq!(acks.len(), personas.len());
+        let leads: std::collections::HashSet<&str> = personas
+            .iter()
+            .map(|persona| persona_follow_up_ack(persona))
+            .collect();
+        assert_eq!(leads.len(), personas.len());
     }
 
     #[test]

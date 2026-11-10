@@ -6,6 +6,8 @@ import ApplyTimeline, { initialStageStates, type StageState } from './ApplyTimel
 import { withCompletionChime } from '../lib/completionSound';
 import Markdown from './Markdown';
 import MockSessionPanel, {
+  MockSetupPanel,
+  personaLabel,
   weakestTurns,
   type MockDrillResult,
   type MockEvaluation,
@@ -167,6 +169,11 @@ export default function CommandPalette({
   const [applyModel, setApplyModel] = useState<string | undefined>(undefined);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [mockSession, setMockSession] = useState<MockSession | null>(null);
+  const [mockSetup, setMockSetup] = useState<{
+    role: string;
+    mode: string;
+    persona: string;
+  } | null>(null);
   const [mockBusy, setMockBusy] = useState(false);
   const [recents, setRecents] = useState<string[]>([]);
   const outputRef = useRef<HTMLDivElement | null>(null);
@@ -263,7 +270,7 @@ export default function CommandPalette({
   const commandWord = (typed.startsWith('/') ? typed.split(/\s+/)[0] : typed).toLowerCase();
   const argument = typed.startsWith('/') ? typed.slice(commandWord.length).trim() : '';
   const mockAnswering = Boolean(mockSession && mockSession.status === 'asking');
-  const showList = !mockAnswering && !typed.includes(' ');
+  const showList = !mockAnswering && !mockSetup && !typed.includes(' ');
 
   const matches = useMemo(() => {
     if (!commandWord) return ordered;
@@ -340,27 +347,16 @@ export default function CommandPalette({
     }
   };
 
-  const beginMock = async (rawArgument: string) => {
-    const simulation = /(^|\s)--(simulation|sim|real|realistic)\b/i.test(rawArgument);
-    const role = rawArgument
-      .replace(/--\S+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!role) {
-      onHistory({
-        kind: 'error',
-        text: 'Give /mock a role title. Example: /mock Director of Training',
-      });
-      return;
-    }
-
+  const startMock = async (role: string, mode: string, persona: string) => {
     setMockBusy(true);
+    setMockSetup(null);
     try {
       const plan: MockPlan = await withCompletionChime(() =>
         invoke('plan_mock_interview', {
           role,
           applicationId: null,
-          mode: simulation ? 'simulation' : 'coaching',
+          mode,
+          persona,
           questionCount: null,
         }),
         { label: 'Mock interview plan' },
@@ -378,13 +374,40 @@ export default function CommandPalette({
       });
       onHistory({
         kind: 'success',
-        text: `**Interview started — ${role}.** ${plan.contract}`,
+        text: `**Interview started — ${role}.** ${personaLabel(plan.persona)} interviewer. ${plan.contract}`,
       });
     } catch (error: any) {
       onHistory({ kind: 'error', text: error?.message || String(error) });
     } finally {
       setMockBusy(false);
     }
+  };
+
+  const beginMock = async (rawArgument: string) => {
+    const simulation = /(^|\s)--(simulation|sim|real|realistic)\b/i.test(rawArgument);
+    const personaFlag = /(^|\s)--(?:persona|voice)\s+(\S+)/i.exec(rawArgument)?.[2]?.toLowerCase();
+    const role = rawArgument
+      .replace(/--(?:persona|voice)\s+\S+/gi, ' ')
+      .replace(/--\S+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!role) {
+      onHistory({
+        kind: 'error',
+        text: 'Give /mock a role title. Example: /mock Director of Training',
+      });
+      return;
+    }
+
+    const mode = simulation ? 'simulation' : 'coaching';
+    // The persona shapes every reaction in the run, so ask for it before the
+    // first question unless the command already named one.
+    if (!personaFlag) {
+      setCommand('');
+      setMockSetup({ role, mode, persona: 'professional' });
+      return;
+    }
+    await startMock(role, mode, personaFlag);
   };
 
   const finishMock = async (plan: MockPlan, transcript: MockTurn[]) => {
@@ -396,6 +419,7 @@ export default function CommandPalette({
           invoke('finish_mock_interview', {
             role: plan.role,
             mode: plan.mode,
+            persona: plan.persona,
             turns: transcript.map((turn) => ({
               question: turn.question,
               group: turn.group,
@@ -443,6 +467,7 @@ export default function CommandPalette({
       const evaluation: MockEvaluation = await invoke('evaluate_mock_answer', {
         role: mockSession.plan.role,
         mode: mockSession.plan.mode,
+        persona: mockSession.plan.persona,
         question: question.text,
         evidence: question.evidence,
         answer: firstAnswer,
@@ -619,6 +644,7 @@ export default function CommandPalette({
         role,
         applicationId: null,
         questions,
+        persona: mockSession?.plan.persona ?? 'professional',
       });
       mockPausedHintRef.current = false;
       setMockSession({
@@ -676,6 +702,7 @@ export default function CommandPalette({
     // During a session the input is an answer box. Only the session commands run
     // as commands; everything else is the candidate's answer.
     const typedText = command.trim();
+    if (mockSetup) return;
     if (mockSession && mockSession.status === 'asking') {
       if (!typedText) return;
       if (executingRef.current) return;
@@ -1128,6 +1155,22 @@ export default function CommandPalette({
           </div>
         ) : null}
 
+        {mockSetup && (
+          <MockSetupPanel
+            role={mockSetup.role}
+            mode={mockSetup.mode}
+            persona={mockSetup.persona}
+            busy={mockBusy}
+            onPersona={(persona) =>
+              setMockSetup((current) => (current ? { ...current, persona } : current))
+            }
+            onStart={() => {
+              void startMock(mockSetup.role, mockSetup.mode, mockSetup.persona);
+            }}
+            onCancel={() => setMockSetup(null)}
+          />
+        )}
+
         <div
           ref={outputRef}
           className="flex-1 overflow-y-auto whitespace-pre-wrap bg-aether-bg p-4 text-sm text-aether-text"
@@ -1184,7 +1227,7 @@ export default function CommandPalette({
               onRetry={retryMock}
               onRestart={() => {
                 void beginMock(
-                  `${mockSession.plan.role}${
+                  `${mockSession.plan.role} --persona ${mockSession.plan.persona}${
                     mockSession.plan.mode === 'simulation' ? ' --simulation' : ''
                   }`,
                 );

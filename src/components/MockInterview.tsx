@@ -23,6 +23,8 @@ export interface MockQuestion {
 export interface MockPlan {
   role: string;
   mode: string;
+  /** One of the ids in MOCK_PERSONAS. */
+  persona: string;
   questions: MockQuestion[];
   grounded_in: number;
   posting_available: boolean;
@@ -125,6 +127,105 @@ const GROUP_LABELS: Record<string, string> = {
 
 export function groupLabel(group: string): string {
   return GROUP_LABELS[group] || group;
+}
+
+export interface MockPersonaOption {
+  id: string;
+  label: string;
+  blurb: string;
+}
+
+/**
+ * The interviewer voices a session can run in. The voice changes the tone of the
+ * reactions and the coaching prose; it never changes a measured score, so a
+ * harsh persona cannot manufacture a worse result.
+ */
+export const MOCK_PERSONAS: MockPersonaOption[] = [
+  { id: 'supportive', label: 'Supportive', blurb: 'Warm; leads with what worked' },
+  { id: 'professional', label: 'Professional', blurb: 'Neutral and specific' },
+  { id: 'skeptical', label: 'Skeptical', blurb: 'Wants evidence for every claim' },
+  { id: 'impatient', label: 'Impatient', blurb: 'Terse; pressed for time' },
+];
+
+export function personaLabel(id: string): string {
+  return MOCK_PERSONAS.find((persona) => persona.id === id)?.label ?? 'Professional';
+}
+
+interface MockSetupPanelProps {
+  role: string;
+  mode: string;
+  persona: string;
+  busy: boolean;
+  onPersona: (id: string) => void;
+  onStart: () => void;
+  onCancel: () => void;
+}
+
+/** The preflight card: who is interviewing you, before the first question. */
+export function MockSetupPanel({
+  role,
+  mode,
+  persona,
+  busy,
+  onPersona,
+  onStart,
+  onCancel,
+}: MockSetupPanelProps) {
+  return (
+    <section className="border-b border-aether-border bg-aether-surface px-4 py-3">
+      <p className="text-meta uppercase tracking-wide text-aether-text-muted">
+        Mock interview · {mode === 'simulation' ? 'Simulation' : 'Coaching'}
+      </p>
+      <p className="mt-1 text-row font-semibold text-aether-text">{role}</p>
+
+      <fieldset className="mt-3">
+        <legend className="text-meta text-aether-text-muted">Who is interviewing you?</legend>
+        <div className="mt-2 grid gap-2 sm:grid-cols-2">
+          {MOCK_PERSONAS.map((option) => {
+            const active = option.id === persona;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                aria-pressed={active}
+                onClick={() => onPersona(option.id)}
+                className={`rounded-lg border px-3 py-2 text-left transition ${
+                  active
+                    ? 'border-aether-primary bg-aether-primary/10'
+                    : 'border-aether-border hover:bg-aether-bg'
+                }`}
+              >
+                <span className="block text-body font-medium text-aether-text">
+                  {option.label}
+                </span>
+                <span className="block text-meta text-aether-text-muted">{option.blurb}</span>
+              </button>
+            );
+          })}
+        </div>
+      </fieldset>
+
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          onClick={onStart}
+          disabled={busy}
+          className="rounded-lg bg-aether-primary px-3 py-2 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
+        >
+          Start interview
+        </button>
+        <button
+          onClick={onCancel}
+          disabled={busy}
+          className="rounded-lg border border-aether-border px-3 py-2 text-body text-aether-text transition hover:bg-aether-bg disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        <span className="text-meta text-aether-text-muted">
+          The tone changes; the scoring does not.
+        </span>
+      </div>
+    </section>
+  );
 }
 
 /**
@@ -304,6 +405,9 @@ export default function MockSessionPanel({
                   : simulation
                     ? 'Simulation'
                     : 'Coaching'}
+              </span>
+              <span className="rounded bg-aether-bg px-1.5 py-0.5 text-meta normal-case text-aether-text-muted">
+                {personaLabel(session.plan.persona)}
               </span>
             </p>
             <p className="truncate text-row font-semibold text-aether-text">{session.plan.role}</p>
