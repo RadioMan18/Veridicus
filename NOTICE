@@ -1,0 +1,50 @@
+# NOTICE
+
+Veridicus Desktop
+Copyright 2026 the Veridicus authors
+
+Veridicus is licensed under the Apache License, Version 2.0; see [LICENSE](LICENSE) for the full text.
+This file records the third-party software redistributed with it and the notices that go with it. It
+adds no restriction to the Apache licence.
+
+## Bundled binaries
+
+The Windows installers ship prebuilt binaries in `src-tauri/sidecars/` so Veridicus can compile PDFs and
+read them back without a system toolchain. They are redistributed unmodified and invoked as separate
+processes; Veridicus does not link against them or patch them.
+
+| Component | Version | Files | Upstream | Licence |
+| --- | --- | --- | --- | --- |
+| Typst | 0.15.1 | `typst.exe` | https://github.com/typst/typst | Apache-2.0 |
+| Poppler | 26.09.0 | `pdftoppm.exe`, `pdftotext.exe`, `poppler.dll` | https://poppler.freedesktop.org/ | GNU GPL, version 2 |
+| poppler support libraries | as built upstream | `freetype.dll`, `icudt78.dll`, `icuuc78.dll`, `jpeg8.dll`, `lcms2.dll`, `Lerc.dll`, `libcrypto-3-x64.dll`, `libcurl.dll`, `liblzma.dll`, `libpng16.dll`, `libssh2.dll`, `openjp2.dll`, `psl-5.dll`, `tiff.dll`, `deflate.dll`, `zlib.dll`, `zstd.dll` | each project, linked upstream | each library's own licence (GNU GPL or LGPL, MIT, BSD, Apache-2.0, zlib and public-domain terms among them) |
+| Microsoft Visual C++ runtime | as shipped with the compiler | `msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll` | https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist | Microsoft Visual C++ redistributable terms |
+
+## Typst
+
+Typst is distributed under the Apache License 2.0 with a NOTICE file, and section 4(d) of that licence
+requires the notice to travel with the binary. The upstream notice is included verbatim as
+`src-tauri/sidecars/NOTICE-typst.txt` and is installed next to `typst.exe`, so it ships inside every
+installer built from this repository.
+
+## Poppler
+
+Poppler and the GNU-licensed libraries beside it are distributed under the GNU General Public License.
+The licence text shipped by Poppler is included as `src-tauri/sidecars/COPYING-poppler.txt` and is
+installed next to the binaries.
+
+The binaries are the upstream project's own builds, unmodified. Source for the exact versions is
+available from https://poppler.freedesktop.org/ and from each support library's project. If you need
+the corresponding source for the binaries in a particular release of Veridicus and cannot obtain it
+upstream, open an issue at https://github.com/RadioMan18/Veridicus/issues and it will be provided.
+
+## Fonts
+
+Fonts bundled inside the Typst binary stay under their own licences. Veridicus adds no fonts of its own
+and does not relicense the ones Typst carries; see the upstream notice and the font licences it
+references.
+
+## No endorsement
+
+The names of the upstream projects and their authors describe the origin of this software. Nothing in
+this file implies that those projects endorse Veridicus.
