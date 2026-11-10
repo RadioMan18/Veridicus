@@ -1,0 +1,83 @@
+name: Feature request
+description: Propose a capability, a change in behaviour, or an improvement to an existing workflow.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Veridicus is a local-first desktop app with a narrow promise: it only states what the claims ledger can support, and it keeps resume and posting text on the machine. Ideas that fit that promise are welcome; ideas that need a hosted service, telemetry or a cloud model usually are not, so say up front if yours does.
+
+        A change to the honesty guardrails needs agreement before code, because weakening a check to make a document pass is the one thing this project will not do. See [CONTRIBUTING.md](https://github.com/RadioMan18/Veridicus/blob/main/CONTRIBUTING.md).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: Describe the situation you are in and what makes it awkward today. A concrete workflow beats a feature name.
+      placeholder: "When I chase three applications in the same week, `/followup` drafts one email per invocation and I end up re-running it…"
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like to happen
+      description: The behaviour you want, including what it should do when the input is thin or the ledger cannot support it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Workarounds you already use, or another design you rejected and why.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the app
+      options:
+        - Apply pipeline (/apply)
+        - Resume or cover letter output
+        - PDF compile, export or preview
+        - Ledger, workspace or imports
+        - Interview practice
+        - Tracking and review
+        - Settings, notifications or sound
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: guardrails
+    attributes:
+      label: Effect on the honesty guardrails
+      description: Does this change what a generated document may claim, what the checks block, or what the audit record keeps? If it does, say which check or record it touches. Say "none" if it does not.
+      placeholder: "None — this only changes how follow-up emails are listed."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Can you help build it
+      options:
+        - I can open a pull request
+        - I can help with testing or review
+        - I am only suggesting the idea
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: This does not require sending resume, ledger or document text to a hosted service.
+          required: true

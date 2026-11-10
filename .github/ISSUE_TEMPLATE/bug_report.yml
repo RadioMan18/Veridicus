@@ -1,0 +1,126 @@
+name: Bug report
+description: Something crashes, hangs, produces the wrong document, or otherwise misbehaves.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Veridicus is maintained by one person, so a report that can be reproduced is the one that gets fixed.
+
+        **Stop and read first:**
+
+        - A security problem does not belong in a public issue. Follow [SECURITY.md](https://github.com/RadioMan18/Veridicus/blob/main/SECURITY.md) instead.
+        - A misleading sentence, a missed false claim or a false block in generated text is an AI concern, not a bug. Use the in-app **Report a problem with this output** action or [docs/CONCERNS-CHANNEL.md](https://github.com/RadioMan18/Veridicus/blob/main/docs/CONCERNS-CHANNEL.md).
+        - Search the open and closed issues before filing; a duplicate costs a round trip.
+
+        Do not paste your ledger, resume text, generated documents or anything else you would not want public. Trim tracking parameters off a posting URL.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The behaviour you saw, in as much detail as you can give. Quote the exact error text rather than summarising it.
+      placeholder: "`/apply` reached the compile step, then the app closed and no PDF was written."
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest sequence that shows the problem. If it only happens with one posting, describe the page rather than pasting your whole resume, and say whether `/resume` was imported from a file.
+      placeholder: |
+        1. Launch 1.0.0 installed from the NSIS installer
+        2. Run `/apply https://…`
+        3. Approve the resume at the review step
+        4. …
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Veridicus version
+      description: The installer filename carries it, for example `Veridicus_1.0.0_x64-setup.exe`.
+      placeholder: "1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installer
+    attributes:
+      label: How did you install it
+      options:
+        - NSIS .exe installer (per-user)
+        - MSI installer (all users)
+        - Built from source (npm run tauri build)
+        - Running from source (npm run tauri dev)
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: windows
+    attributes:
+      label: Windows version
+      options:
+        - Windows 11
+        - Windows 10
+        - Windows Server
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where did it happen
+      options:
+        - Apply pipeline (/apply)
+        - Resume or cover letter output
+        - PDF compile, export or preview
+        - Ledger, workspace or imports
+        - Interview practice (/prep, /mock, /questions, /stories)
+        - Settings, notifications or sound
+        - Install, launch or update
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: ollama
+    attributes:
+      label: Ollama setup
+      description: The output of `ollama --version` and the models you have pulled, if the problem involved generation. Leave blank if it did not.
+      placeholder: "ollama 0.12.x; llama3.2:3b and gemma4:12b pulled"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or error output
+      description: Paste any error text, console output, or the contents of `panic.log` if the app died. The app writes `panic.log` to its working directory. Redact paths and names you do not want public.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched the existing issues and this is not a duplicate.
+          required: true
+        - label: I removed personal data — no ledger contents, resume text or private employer details.
+          required: true
+        - label: This is not a security report, and not a complaint about a document's wording.
+          required: true
