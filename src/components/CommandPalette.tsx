@@ -140,7 +140,7 @@ const COMMANDS: PaletteCommand[] = [
   },
 ];
 
-const RECENTS_KEY = 'careeros-recent-commands';
+const RECENTS_KEY = 'veridicus-recent-commands';
 
 interface CommandPaletteProps {
   isOpen: boolean;

@@ -9,7 +9,7 @@
 
 ## 1. Purpose
 
-This document assigns responsibilities for the CareerOS AI management system and the honesty
+This document assigns responsibilities for the Veridicus AI management system and the honesty
 guardrails. It supports ISO/IEC 42001 A.3.2 (AI roles and responsibilities) and A.10.2 (allocation of
 responsibilities across the AI supply chain).
 
@@ -69,7 +69,7 @@ responsibilities across the AI supply chain).
 
 ## 5. Independence and single-operator limitation
 
-CareerOS is currently a single-user demonstrator. The same person may hold AO, SO and MO. That is
+Veridicus is currently a single-user demonstrator. The same person may hold AO, SO and MO. That is
 acceptable for operation but **not** for independent audit. Before claiming an independent internal
 audit, the operating organization must appoint an IR who did not perform the audited activity (an
 external reviewer, peer or separate function) and record the appointment.

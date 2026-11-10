@@ -22,13 +22,16 @@ export interface NotificationText {
   body: string;
 }
 
-const STORAGE_KEY = 'careeros:desktop-notifications';
+const STORAGE_KEY = 'veridicus:desktop-notifications';
+/** Written by builds before the rename; read once so the preference survives it. */
+const LEGACY_STORAGE_KEY = 'careeros:desktop-notifications';
 /** Same eight-second floor as the chime; shorter runs did not outlive your attention. */
 export const MIN_NOTIFY_RUN_MS = 8_000;
 
 export function readNotifyEnabled(): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY) !== 'off';
+    const stored = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+    return stored !== 'off';
   } catch {
     return true;
   }
@@ -70,8 +73,8 @@ export function shouldNotify(options: {
 export function notificationText(options: { kind: NotificationKind; label?: string }): NotificationText {
   const label = options.label?.trim() || 'Run';
   return options.kind === 'failure'
-    ? { title: 'CareerOS', body: `${label} failed — open CareerOS for details.` }
-    : { title: 'CareerOS', body: `${label} finished.` };
+    ? { title: 'Veridicus', body: `${label} failed — open Veridicus for details.` }
+    : { title: 'Veridicus', body: `${label} finished.` };
 }
 
 /**

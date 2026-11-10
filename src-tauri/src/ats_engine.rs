@@ -1,4 +1,4 @@
-//! ATS-optimized resume generation for CareerOS.
+//! ATS-optimized resume generation for Veridicus.
 //!
 //! Applies ATS-safe formatting rules to tailored resumes:
 //! - Single column layout (no tables, columns, graphics)

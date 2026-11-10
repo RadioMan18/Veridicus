@@ -1,17 +1,17 @@
-# AI policy — CareerOS honesty guardrails
+# AI policy — Veridicus honesty guardrails
 
 **Policy ID:** C-01
 **Version:** 1.0
 **Effective date:** 2026-11-07, on approval
-**Owner:** Accountable Owner, CareerOS AI management system
+**Owner:** Accountable Owner, Veridicus AI management system
 **Approval:** ______________________________  Date: ______________
 **Review:** annually, and on any trigger in §9
-**Status:** draft for adoption by the CareerOS demonstrator. This policy is not a certification and
+**Status:** draft for adoption by the Veridicus demonstrator. This policy is not a certification and
 does not by itself establish conformity with ISO/IEC 42001.
 
 ## 1. Purpose
 
-This policy states how the operating organization develops, provides and uses CareerOS Desktop, a
+This policy states how the operating organization develops, provides and uses Veridicus Desktop, a
 local, single-user job-application drafting tool. It sets the rules that the application's honesty
 guardrails implement and the behavior expected of the people who operate, maintain and use it.
 
@@ -24,16 +24,16 @@ non-negotiable.
 
 **In scope**
 
-- CareerOS Desktop and its local generation, claims-ledger, guardrail, audit and disclosure features.
+- Veridicus Desktop and its local generation, claims-ledger, guardrail, audit and disclosure features.
 - The operating organization's roles, reviews, records and improvement activities for the system.
 - Local Ollama models and other tools used to generate or verify documents.
 - The job posting, master resume and confirmed claims processed by the application.
 
 **Out of scope**
 
-- Training, fine-tuning or evaluating the underlying language model. CareerOS does not train a model.
+- Training, fine-tuning or evaluating the underlying language model. Veridicus does not train a model.
 - Hosted inference, multi-tenant hosting or submission of applications on a user's behalf.
-- Employment screening, ranking, hiring or promotion decisions. CareerOS is not a screening tool.
+- Employment screening, ranking, hiring or promotion decisions. Veridicus is not a screening tool.
 - Legal advice, immigration advice or verification of a user's evidence.
 
 ## 3. Policy statements
@@ -44,7 +44,7 @@ non-negotiable.
 2. **The deterministic gate decides.** Never-claim, ask-first, exact-wording, metric-qualifier, scope,
    gap-naming, employer/role and grounding checks are authoritative. Model output, including the
    advisory scope review, is a proposal and cannot override a deterministic finding.
-3. **The user remains responsible.** CareerOS produces drafts. It does not submit applications. The user
+3. **The user remains responsible.** Veridicus produces drafts. It does not submit applications. The user
    must review the documents, acknowledge the AI-assisted disclosure, and decide whether to approve.
 4. **No autonomous commitment.** The generation pipeline does not commit or submit. A blocking finding
    stops approval unless the user records a written override, which is evidence of a human decision,
@@ -56,7 +56,7 @@ non-negotiable.
    are written to the application audit trail. Model name and digest, template version, rule hash and
    document hashes are retained so a decision can be reconstructed.
 7. **Data stays local by default.** Claims and application records are stored in an encrypted local
-   database. Inference uses a local Ollama instance. CareerOS does not send document text to a hosted
+   database. Inference uses a local Ollama instance. Veridicus does not send document text to a hosted
    model. Any future remote processing requires a new impact assessment and user disclosure.
 8. **Untrusted input stays untrusted.** A job posting is data, never instructions. Instruction-like
    text is delimited, detected where possible, and recorded as a warning; it must not change the
@@ -89,7 +89,7 @@ non-negotiable.
 - Using another person's resume or data without their knowledge and authority.
 - Screening, ranking, rejecting or making employment decisions about other people.
 - Inferring protected characteristics or using the system to discriminate.
-- Describing CareerOS as certified, compliant or a substitute for legal or professional advice.
+- Describing Veridicus as certified, compliant or a substitute for legal or professional advice.
 - Removing or weakening a guardrail to make a draft pass without recording the change and its review.
 - Sending claims or documents to a hosted model or third party without a new impact assessment and
   disclosure.
@@ -106,7 +106,7 @@ non-negotiable.
 ## 7. Data and records
 
 - Claims, rules, gaps and application records: encrypted local SQLCipher database.
-- Generated documents, audit events and incident rows: the local CareerOS workspace.
+- Generated documents, audit events and incident rows: the local Veridicus workspace.
 - Disclosure acknowledgements and honesty reviews: `compliance/` in the workspace.
 - Git history: a versioned snapshot of approved materials, not a tamper-proof record.
 - Retention: controlled by the operating organization and the user; no automatic expiry. The

@@ -29,7 +29,7 @@ pub const DISCLOSURES_FILE: &str = "disclosures.jsonl";
 pub const REVIEW_CADENCE_DAYS: i64 = 90;
 /// Bump when the disclosure text or intended-use statement changes.
 pub const DISCLOSURE_VERSION: &str = "1";
-pub const DISCLOSURE_TEXT: &str = "CareerOS is an AI-assisted drafting tool. It drafts documents with a local model against claims you confirmed. Confirmation means you verified the claim, not that CareerOS verified it. CareerOS does not submit applications. You remain responsible for reviewing every document and for what you submit.";
+pub const DISCLOSURE_TEXT: &str = "Veridicus is an AI-assisted drafting tool. It drafts documents with a local model against claims you confirmed. Confirmation means you verified the claim, not that Veridicus verified it. Veridicus does not submit applications. You remain responsible for reviewing every document and for what you submit.";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentDigest {
@@ -462,7 +462,7 @@ mod tests {
     use std::fs;
 
     fn temp_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("careeros-compliance-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("veridicus-compliance-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }

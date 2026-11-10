@@ -26,7 +26,7 @@ export default function DashboardView({
         <section className="rounded-xl border border-aether-border bg-aether-surface p-5">
           <h3 className="text-row font-semibold text-aether-text">Apply to a posting</h3>
           <p className="mt-1 text-meta text-aether-text-muted">
-            Paste a job URL. CareerOS scrapes it, tailors your resume and letter, then fact-checks
+            Paste a job URL. Veridicus scrapes it, tailors your resume and letter, then fact-checks
             both before anything is committed.
           </p>
           <code className="mt-3 block truncate rounded bg-aether-bg px-2 py-1 font-mono text-xs text-aether-text-muted">

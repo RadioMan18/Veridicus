@@ -3,10 +3,10 @@ use rusqlite::Connection;
 use std::{env, fs, path::PathBuf};
 
 fn open() -> Connection {
-    let workspace = dirs::document_dir().expect("documents dir").join("CareerOS");
-    let key_hex = fs::read_to_string(workspace.join(".careeros").join(".db_key")).expect("key file");
+    let workspace = dirs::document_dir().expect("documents dir").join("Veridicus");
+    let key_hex = fs::read_to_string(workspace.join(".veridicus").join(".db_key")).expect("key file");
     let key = hex::decode(key_hex.trim()).expect("hex key");
-    let conn = Connection::open(workspace.join("careeros.db")).expect("open db");
+    let conn = Connection::open(workspace.join("veridicus.db")).expect("open db");
     unsafe {
         let rc = sqlite3_key(conn.handle(), key.as_ptr() as *const _, key.len() as _);
         assert_eq!(rc, SQLITE_OK, "sqlite3_key failed");
@@ -19,7 +19,7 @@ fn open() -> Connection {
 
 fn main() {
     let conn = open();
-    let workspace: PathBuf = dirs::document_dir().unwrap().join("CareerOS");
+    let workspace: PathBuf = dirs::document_dir().unwrap().join("Veridicus");
     let args: Vec<String> = env::args().skip(1).collect();
 
     let deleting_by_id = args.first().map(|s| s.as_str()) == Some("delete-id");

@@ -1,4 +1,4 @@
-# Technical Specification: CareerOS Desktop (Rev2)
+# Technical Specification: Veridicus Desktop (Rev2)
 
 **System Architecture & Technical Design for a Standalone Desktop Job Search OS powered by Tauri, Local Ollama LLMs, SQLCipher Encryption, and an Honesty Guardrail Verification Engine**
 
@@ -8,18 +8,18 @@
 
 ## 1. Executive Overview & Honesty Principles
 
-**CareerOS** is a privacy-first, desktop-native application designed to transform job search workflows into structured, file-based projects with an uncompromising **Honesty Verification Pipeline**.
+**Veridicus** is a privacy-first, desktop-native application designed to transform job search workflows into structured, file-based projects with an uncompromising **Honesty Verification Pipeline**.
 
-Built with **Tauri v2** (Rust backend + React/TypeScript frontend) and integrated directly with a local **Ollama** runtime, CareerOS eliminates reliance on third-party SaaS tools or cloud AI API keys.
+Built with **Tauri v2** (Rust backend + React/TypeScript frontend) and integrated directly with a local **Ollama** runtime, Veridicus eliminates reliance on third-party SaaS tools or cloud AI API keys.
 
 ### Core Honesty Principle
 > *"The model proposes, the record decides. Every claim traces to a confirmed fact; anything unsupported is flagged, never smoothed over."*
 
-CareerOS guarantees **Zero-Hallucination Resume Generation** by introducing a local SQLCipher-encrypted Claims Ledger database, strict presentation rules, mandatory gap-naming logic, employer-consistency warnings, an automated pre-render Fact-Check Pass (never-claim scanning, scope verification, hardened metric extraction, and mdast-style AST diffing), an OCR-driven Visual Review Gate, and human-in-the-loop (HITL) approval gates before any document is finalized.
+Veridicus guarantees **Zero-Hallucination Resume Generation** by introducing a local SQLCipher-encrypted Claims Ledger database, strict presentation rules, mandatory gap-naming logic, employer-consistency warnings, an automated pre-render Fact-Check Pass (never-claim scanning, scope verification, hardened metric extraction, and mdast-style AST diffing), an OCR-driven Visual Review Gate, and human-in-the-loop (HITL) approval gates before any document is finalized.
 
 ```
 +-----------------------------------------------------------------------------------+
-|                                 CareerOS Desktop                                  |
+|                                 Veridicus Desktop                                  |
 |                                                                                   |
 |  +-----------------------------------------------------------------------------+  |
 |  |                           React / TS UI Frontend                            |  |
@@ -57,19 +57,19 @@ CareerOS guarantees **Zero-Hallucination Resume Generation** by introducing a lo
 | :--- | :--- | :--- |
 | **Framework** | **Tauri v2** | Lightweight, cross-platform desktop shell (Rust backend + React/TS frontend). |
 | **Frontend UI** | **React + Tailwind CSS** | Workspace dashboard, Claims Ledger editor, Command Palette (`Cmd+K` / `Ctrl+K`), Ollama Model Manager, Fact-Check & Gap Verification view, Visual Review Gate. Styling via Tailwind, Lucide icons, Radix UI / Shadcn primitives. |
-| **Database Engine** | **SQLCipher (`rusqlite` + `bundled-sqlcipher`)** | Encrypted local relational database (`careeros.db`) storing the Claims Ledger, Rules Engine, Gaps, and Application Records. Key generated app-side, held in Windows PasswordVault, wrapped with a user recovery code; wrong key fails closed. |
+| **Database Engine** | **SQLCipher (`rusqlite` + `bundled-sqlcipher`)** | Encrypted local relational database (`veridicus.db`) storing the Claims Ledger, Rules Engine, Gaps, and Application Records. Key generated app-side, held in Windows PasswordVault, wrapped with a user recovery code; wrong key fails closed. |
 | **Local LLM Engine** | **Ollama REST API** | Local inference via `http://localhost:11434`; ledger-bounded prompts plus mandatory post-hoc fact-checking to prevent hallucination. |
 | **Job Scraper** | **Rust (`reqwest` + `scraper` + `htmd`)** | Built-in HTTP client fetching public job pages, stripping boilerplate, and converting main job text to dated Markdown files. |
 | **Document Compiler** | **Typst CLI (bundled) + `pdftoppm`** | Version-pinned sidecar binaries compile tailored Markdown resumes into ATS-friendly PDFs and rasterize every page to PNG for visual review. No PATH dependency. |
 | **Visual QA** | **OCR + Layout Analysis (bundled)** | Automated inspection of rendered page images: overflow, orphan headings, broken line wraps, placeholder text, wrong role/company names. Findings flag for HITL approval. |
 | **Structural Diff** | **Markdown AST (mdast-style, via `comrak`)** | Drafts parsed to a Markdown AST and structurally diffed against the master resume to list every change from the base. |
-| **Storage & Audit** | **Local FS + Git (`git2`)** | File workspace at `~/Documents/CareerOS/` with automated Git commits; `applications.csv` synced with the SQLite ledger. |
+| **Storage & Audit** | **Local FS + Git (`git2`)** | File workspace at `~/Documents/Veridicus/` with automated Git commits; `applications.csv` synced with the SQLite ledger. |
 
 ---
 
 ## 3. Database Schema & Data Models (SQLCipher-Encrypted SQLite)
 
-The core database lives at `~/Documents/CareerOS/careeros.db`, encrypted with SQLCipher. The 32-byte database key is generated on first launch, stored in Windows PasswordVault, wrapped with a user recovery code (PBKDF2 100k iterations + AES-256-GCM), and applied via `sqlite3_key()` **before any schema operation**. A wrong or missing key fails closed. Four primary entity tables carry the whole system:
+The core database lives at `~/Documents/Veridicus/veridicus.db`, encrypted with SQLCipher. The 32-byte database key is generated on first launch, stored in Windows PasswordVault, wrapped with a user recovery code (PBKDF2 100k iterations + AES-256-GCM), and applied via `sqlite3_key()` **before any schema operation**. A wrong or missing key fails closed. Four primary entity tables carry the whole system:
 
 ```sql
 -- 1. Candidate Claims Ledger
@@ -232,7 +232,7 @@ The user reviews the AST diff, the fact-check report, the gap-naming lines, and 
 
 ### 6.1 Local Ollama Engine (`http://localhost:11434`)
 
-CareerOS includes a dedicated **Ollama Model Manager** within the desktop UI that directly controls the local Ollama daemon via its REST endpoints.
+Veridicus includes a dedicated **Ollama Model Manager** within the desktop UI that directly controls the local Ollama daemon via its REST endpoints.
 
 1. **Installed Model Discovery (`GET /api/tags`):**
    * Automatically detects and lists local models.
@@ -280,14 +280,14 @@ Workflows can be initiated via UI buttons or the keyboard command palette (`Cmd+
 ## 8. Local Workspace Structure
 
 ```
-~/Documents/CareerOS/
-├── careeros.db                # SQLCipher-encrypted SQLite (Claims, Rules, Gaps, Apps)
+~/Documents/Veridicus/
+├── veridicus.db                # SQLCipher-encrypted SQLite (Claims, Rules, Gaps, Apps)
 ├── SYSTEM.md                  # Master prompt context & system constraints
 ├── applications.csv           # Human-readable mirror of application_records (synced)
 ├── daily-log.md               # Append-only execution log; queryable for daily/weekly application counts
 ├── templates/
 │   └── resume_template.typ    # Typst resume layout engine
-├── .careeros/
+├── .veridicus/
 │   ├── skills/                # Reusable workflow prompts (.md)
 │   │   ├── resume-tailor.md
 │   │   ├── cover-letter.md
@@ -316,7 +316,7 @@ Workflows can be initiated via UI buttons or the keyboard command palette (`Cmd+
 
 ## 9. Bundled Binaries & Packaging
 
-Most users will not have Typst, Poppler, or an OCR engine on PATH, and compiling them with the MSVC toolchain is a known packaging risk. CareerOS therefore bundles **official prebuilt Windows binaries** as version-pinned sidecars inside the Tauri installer and resolves them from the app bundle at runtime — nothing is compiled with MSVC at build time:
+Most users will not have Typst, Poppler, or an OCR engine on PATH, and compiling them with the MSVC toolchain is a known packaging risk. Veridicus therefore bundles **official prebuilt Windows binaries** as version-pinned sidecars inside the Tauri installer and resolves them from the app bundle at runtime — nothing is compiled with MSVC at build time:
 
 * **`typst`** — PDF compilation (official release binary)
 * **`pdftoppm` + `pdftotext` (Poppler)** — page rasterization and text-layer coordinate extraction (`-bbox`) for layout analysis

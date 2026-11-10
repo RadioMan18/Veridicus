@@ -1,7 +1,7 @@
 {
-  "name": "careeros",
+  "name": "veridicus",
   "version": "0.1.0",
-  "description": "CareerOS Desktop — privacy-first job search OS with honesty guardrails",
+  "description": "Veridicus Desktop — privacy-first job search OS with honesty guardrails",
   "type": "module",
   "scripts": {
     "dev": "vite",

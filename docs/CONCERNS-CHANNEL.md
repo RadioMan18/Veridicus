@@ -12,7 +12,7 @@ by the operating organization before this is treated as an operating channel.
 ## 1. Purpose
 
 This procedure gives users, maintainers, affected third parties and others a way to report a concern
-about CareerOS or its outputs, and defines how reports are handled. It supports ISO/IEC 42001 A.3.3
+about Veridicus or its outputs, and defines how reports are handled. It supports ISO/IEC 42001 A.3.3
 (reporting of concerns), A.8.3 (external reporting) and A.8.4 (communication of incidents).
 
 A concern is broader than a bug. It includes a false or misleading output, a missed false claim, a

@@ -1,4 +1,4 @@
-//! Orchestrator for CareerOS — Full Guardrailed `/apply` Workflow.
+//! Orchestrator for Veridicus — Full Guardrailed `/apply` Workflow.
 //!
 //! Sequential execution pipeline:
 //!   0. Create application_records row (PENDING_REVIEW)
@@ -96,7 +96,7 @@ pub fn commit_application(
 
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
     let app_dir = docs_dir
-        .join("CareerOS")
+        .join("Veridicus")
         .join("applications")
         .join(&application_id);
     let resume_md = fs::read_to_string(app_dir.join("resume.md")).unwrap_or_default();
@@ -287,7 +287,7 @@ pub fn save_text_via_dialog(default_name: String, contents: String) -> Result<Op
 pub fn get_application_folder(application_id: String) -> Result<String, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
     Ok(docs_dir
-        .join("CareerOS")
+        .join("Veridicus")
         .join("applications")
         .join(application_id)
         .to_string_lossy()
@@ -414,7 +414,7 @@ pub async fn execute_apply_workflow(
 
     // Create application_records row with PENDING_REVIEW status
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
     let app_id = Uuid::new_v4().to_string();
 
     let now = Utc::now().format("%Y-%m-%d").to_string();
@@ -1195,7 +1195,7 @@ fn compile_document(
 /// Default export location: the workspace exports folder.
 fn default_export_dir() -> String {
     dirs::document_dir()
-        .map(|docs| docs.join("CareerOS").join("exports"))
+        .map(|docs| docs.join("Veridicus").join("exports"))
         .unwrap_or_else(std::env::temp_dir)
         .to_string_lossy()
         .into_owned()
@@ -1532,7 +1532,7 @@ pub async fn generate_weekly_report(state: State<'_, AppState>) -> Result<String
 #[tauri::command]
 pub async fn analyze_logs(state: State<'_, AppState>) -> Result<String, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
     let log_path = workspace_root.join("daily-log.md");
 
     let log_content = if log_path.exists() {
@@ -1573,7 +1573,7 @@ pub fn get_honesty_stats(
     _state: State<'_, AppState>,
 ) -> Result<crate::compliance::HonestyStats, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
     Ok(crate::compliance::stats(&workspace_root))
 }
 
@@ -1596,7 +1596,7 @@ pub fn report_output_problem(
 ) -> Result<crate::compliance::ProblemReport, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
     let app_dir = docs_dir
-        .join("CareerOS")
+        .join("Veridicus")
         .join("applications")
         .join(&application_id);
     let category = if PROBLEM_CATEGORIES.contains(&category.as_str()) {
@@ -1621,7 +1621,7 @@ pub fn report_output_problem(
 #[tauri::command]
 pub fn export_incident_log() -> Result<Option<String>, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
     let reports = crate::compliance::all_problem_reports(&workspace_root);
     let mut csv = String::from(
         "incident_id,timestamp,application_id,category,status,note,app_version\n",
@@ -1640,7 +1640,7 @@ pub fn export_incident_log() -> Result<Option<String>, String> {
     }
 
     let selected = FileDialog::new()
-        .set_file_name("careeros-incident-log.csv")
+        .set_file_name("veridicus-incident-log.csv")
         .add_filter("CSV", &["csv"])
         .save_file();
     match selected {
@@ -1764,7 +1764,7 @@ pub fn acknowledge_output_disclosure(
     _state: State<'_, AppState>,
 ) -> Result<bool, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
     let app_dir = workspace_root.join("applications").join(&application_id);
 
     let mut event = crate::compliance::new_event(&application_id, "disclosure_acknowledged");
@@ -2006,7 +2006,7 @@ pub fn get_fit_matrix(
     let _ = state;
     let docs = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
     let path = docs
-        .join("CareerOS")
+        .join("Veridicus")
         .join("applications")
         .join(&application_id)
         .join("fit-matrix.json");

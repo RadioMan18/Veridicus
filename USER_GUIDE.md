@@ -1,10 +1,10 @@
-﻿# CareerOS User Guide
+﻿# Veridicus User Guide
 
 ## Getting Started
 
 ### Install Ollama
 
-CareerOS runs every model locally through Ollama: there is no cloud account, API key or subscription. Install Ollama once, before the setup wizard asks which models to use.
+Veridicus runs every model locally through Ollama: there is no cloud account, API key or subscription. Install Ollama once, before the setup wizard asks which models to use.
 
 - **Windows**: download `OllamaSetup.exe` from [ollama.com/download](https://ollama.com/download) and run it, or install from PowerShell with `irm https://ollama.com/install.ps1 | iex`. It installs in your user account, starts in the background, and serves the API on `http://localhost:11434`.
 - **macOS**: download the app from [ollama.com/download](https://ollama.com/download) and drag it to Applications, or run `curl -fsSL https://ollama.com/install.sh | sh`. Open the app once so its background service starts.
@@ -17,11 +17,11 @@ ollama --version
 ollama pull llama3.2:3b
 ```
 
-If CareerOS reports that Ollama is not responding, start the daemon with `ollama serve` (on Windows and macOS the desktop app normally starts it for you).
+If Veridicus reports that Ollama is not responding, start the daemon with `ollama serve` (on Windows and macOS the desktop app normally starts it for you).
 
 ### Recommended Models
 
-CareerOS uses two model roles, set in Ollama Settings: a **fast** model for short tasks (gap analysis, fact-check, bullet review) and a **deep** model for documents (`/apply`, `/prep`, `/mock`). Both should be instruction-tuned, because the app relies on the model following a fixed output shape and returning JSON for bullet review.
+Veridicus uses two model roles, set in Ollama Settings: a **fast** model for short tasks (gap analysis, fact-check, bullet review) and a **deep** model for documents (`/apply`, `/prep`, `/mock`). Both should be instruction-tuned, because the app relies on the model following a fixed output shape and returning JSON for bullet review.
 
 | Model | Pull | Size | Role |
 | --- | --- | --- | --- |
@@ -30,14 +30,14 @@ CareerOS uses two model roles, set in Ollama Settings: a **fast** model for shor
 | `gemma4:12b` | `ollama pull gemma4:12b` | ~8 GB | Deep default on a 16 GB machine |
 | `qwen3:14b` | `ollama pull qwen3:14b` | 9.3 GB | Deep alternative, 16 GB and up |
 
-Sizing rule: keep the model file under roughly half your RAM and leave the rest for the context window. A document generation sends the base resume, the verified claims and the posting in one prompt, so CareerOS asks for a 24 576-token context by default; raise the context length in Ollama Settings for a long base resume. All four models above support a large enough context.
+Sizing rule: keep the model file under roughly half your RAM and leave the rest for the context window. A document generation sends the base resume, the verified claims and the posting in one prompt, so Veridicus asks for a 24 576-token context by default; raise the context length in Ollama Settings for a long base resume. All four models above support a large enough context.
 
 Avoid models below about 3B for documents, and avoid reasoning-only or uncensored fine-tunes: they tend to answer in commentary or refuse the required shape, which the guardrails reject after one retry. If a document fails on the same defect twice, try a larger deep model before editing your claims.
 
 ### First Launch
-1. Launch CareerOS from your installed application
+1. Launch Veridicus from your installed application
 2. Complete the Setup Wizard:
-   - **Welcome**: Introduction to CareerOS
+   - **Welcome**: Introduction to Veridicus
    - **Profile**: Enter your name, contact info, and target roles
    - **Master Resume**: Upload or paste your resume
    - **Claims Verification**: Review and confirm extracted claims (these become your verified facts)
@@ -179,13 +179,13 @@ Settings -> Honesty record shows blocking findings, overrides, advisory findings
 
 ### Completion Sound (Settings)
 
-Settings -> Completion sound plays a short chime when a run takes longer than eight seconds and CareerOS is in the background. Failures use a lower tone, cancelled runs and short commands stay silent, and the mock interview chimes when a session ends regardless of how long it ran. Choose Off, Background (default) or Always.
+Settings -> Completion sound plays a short chime when a run takes longer than eight seconds and Veridicus is in the background. Failures use a lower tone, cancelled runs and short commands stay silent, and the mock interview chimes when a session ends regardless of how long it ran. Choose Off, Background (default) or Always.
 
-Settings -> Desktop notifications shows the same runs as a Windows toast, so a long run is visible when you are in another window. The toggle is the consent step: turning it on asks Windows once, and if permission is refused it switches back and points at Settings -> System -> Notifications -> CareerOS. Toast text names only the operation ("Cover letter finished."), never an employer, a role or document text, because notifications stay in the Action Center. Windows Focus Assist and the per-app notification switch can still hide them silently; the chime is the fallback. Toasts only work in the installed app — a `tauri dev` build has no Start-menu shortcut, so Windows may drop them.
+Settings -> Desktop notifications shows the same runs as a Windows toast, so a long run is visible when you are in another window. The toggle is the consent step: turning it on asks Windows once, and if permission is refused it switches back and points at Settings -> System -> Notifications -> Veridicus. Toast text names only the operation ("Cover letter finished."), never an employer, a role or document text, because notifications stay in the Action Center. Windows Focus Assist and the per-app notification switch can still hide them silently; the chime is the fallback. Toasts only work in the installed app — a `tauri dev` build has no Start-menu shortcut, so Windows may drop them.
 
 ## Compliance and evidence
 
-CareerOS is built so the honesty guardrails can be inspected rather than trusted: every application leaves a record of what was generated, what was checked, what the gate decided, and what you approved. The design is informed by **NIST AI RMF 1.0** and its Generative AI Profile (**NIST AI 600-1**), and by **ISO/IEC 42001:2023**, with ISO/IEC 23894 and ISO/IEC 42005 as guidance.
+Veridicus is built so the honesty guardrails can be inspected rather than trusted: every application leaves a record of what was generated, what was checked, what the gate decided, and what you approved. The design is informed by **NIST AI RMF 1.0** and its Generative AI Profile (**NIST AI 600-1**), and by **ISO/IEC 42001:2023**, with ISO/IEC 23894 and ISO/IEC 42005 as guidance.
 
 This is alignment evidence, not certification. NIST AI RMF is voluntary, and ISO/IEC 42001 certifies an organization's AI management system rather than an application. The repository's policy, roles, objectives, impact assessment and Statement of Applicability are drafts awaiting signature, and the audit programme has not been run. The evidence index is `docs/COMPLIANCE-EVIDENCE.md`; applicability and the three exclusions are in `docs/STATEMENT-OF-APPLICABILITY.md`.
 
@@ -203,7 +203,7 @@ Every application folder gets an append-only audit file, `audit/events.jsonl`, w
 
 ### How the standards map to features
 
-| Anchor | What CareerOS does | Where |
+| Anchor | What Veridicus does | Where |
 | --- | --- | --- |
 | NIST MEASURE 2.8, ISO/IEC 42001 A.6.2.8 - event logs | Append-only per-application events with model, rule-set and document hashes | `applications/<id>/audit/events.jsonl` |
 | NIST MEASURE 2.1/2.3, ISO A.6.2.4 - verification and validation | Adversarial fixtures for fabricated metrics, dropped qualifiers, scope escalation, never-claim subjects, omitted gaps, ungrounded bullets, employer mismatch and prompt injection, run on every `cargo test` | `src-tauri/eval/guardrails.json` |
@@ -217,7 +217,7 @@ Every application folder gets an append-only audit file, `audit/events.jsonl`, w
 
 ### The commit gate
 
-Generation never commits by itself. When you approve an application, CareerOS re-reads the rendered files, re-runs the deterministic checks against the current rules and claims, and writes the commit-time report. A blocking finding stops the commit. An override requires a written reason, is stored in `guardrail-override.md`, is appended to the application notes and is recorded as an `override` event.
+Generation never commits by itself. When you approve an application, Veridicus re-reads the rendered files, re-runs the deterministic checks against the current rules and claims, and writes the commit-time report. A blocking finding stops the commit. An override requires a written reason, is stored in `guardrail-override.md`, is appended to the application notes and is recorded as an `override` event.
 
 ### What the record cannot do
 
@@ -225,7 +225,7 @@ Generation never commits by itself. When you approve an application, CareerOS re
 - It is not an audit. No independent internal audit or management review has been performed, and no baseline has been measured for the honesty objectives.
 - Rule changes are detectable through the rule-set hash, but the previous rule text is not retained.
 - The advisory model pass is best-effort and can miss paraphrased scope inflation. The deterministic gate is the authority, and it is not a truth oracle.
-- CareerOS does not submit applications and cannot retract one. Recourse after submission depends on the employer and on your own process.
+- Veridicus does not submit applications and cannot retract one. Recourse after submission depends on the employer and on your own process.
 
 ### Producing evidence for one run
 
@@ -242,9 +242,9 @@ Generation never commits by itself. When you approve an application, CareerOS re
 ## Tips
 
 - **Be honest**: Only claims in your ledger are used. If a required skill isn't there, it won't be added
-- **Keep Ollama running**: CareerOS requires Ollama to be running locally
+- **Keep Ollama running**: Veridicus requires Ollama to be running locally
 - **Use the ledger**: Track all applications in the Application Ledger
-- **Git history**: All /apply runs are automatically committed to Git in your CareerOS workspace
+- **Git history**: All /apply runs are automatically committed to Git in your Veridicus workspace
 
 ## Troubleshooting
 

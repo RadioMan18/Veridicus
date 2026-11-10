@@ -24,9 +24,9 @@ pub fn get_or_create_db_key(db_path: &Path) -> Result<Vec<u8>, String> {
     }
 
     let workspace_root = db_path.parent().ok_or("Invalid database path")?;
-    let dot_careeros = workspace_root.join(".careeros");
-    let _ = std::fs::create_dir_all(&dot_careeros);
-    let key_path = dot_careeros.join(".db_key");
+    let dot_veridicus = workspace_root.join(".veridicus");
+    let _ = std::fs::create_dir_all(&dot_veridicus);
+    let key_path = dot_veridicus.join(".db_key");
 
     let key = if key_path.exists() {
         let hex_str = std::fs::read_to_string(&key_path)
@@ -101,7 +101,7 @@ fn wrap_key_with_recovery(db_key: &[u8], recovery_code: &str) -> Result<Vec<u8>,
         .map_err(|e| format!("PBKDF2 failed: {}", e))?;
 
     let aes_key = Key::<Aes256Gcm>::from_slice(&derived_key_bytes);
-    let nonce = Nonce::from_slice(b"careeros_key");
+    let nonce = Nonce::from_slice(b"veridicuskey");
     let cipher = Aes256Gcm::new(aes_key);
 
     let encrypted = cipher.encrypt(nonce, db_key)
@@ -316,9 +316,9 @@ mod schema_tests {
 
     #[test]
     fn initialising_the_database_twice_is_safe_and_adds_the_matrix_columns() {
-        let dir = std::env::temp_dir().join(format!("careeros-schema-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("veridicus-schema-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join("careeros-test.db");
+        let path = dir.join("veridicus-test.db");
         let _ = std::fs::remove_file(&path);
 
         let key = vec![7u8; 32];
@@ -363,8 +363,8 @@ pub async fn init_encrypted_database_cmd(
     state: State<'_, AppState>
 ) -> Result<InitResult, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
-    let db_path = workspace_root.join("careeros.db");
+    let workspace_root = docs_dir.join("Veridicus");
+    let db_path = workspace_root.join("veridicus.db");
 
     *state.db_path.lock().unwrap() = Some(db_path.to_string_lossy().into_owned());
 

@@ -55,15 +55,15 @@ describe('shouldNotify', () => {
 describe('notificationText', () => {
   it('names the operation, not the contents', () => {
     expect(notificationText({ kind: 'success', label: 'Cover letter' })).toEqual({
-      title: 'CareerOS',
+      title: 'Veridicus',
       body: 'Cover letter finished.',
     })
   })
 
   it('points at the app for failures instead of carrying the error', () => {
     expect(notificationText({ kind: 'failure', label: 'Apply workflow' })).toEqual({
-      title: 'CareerOS',
-      body: 'Apply workflow failed — open CareerOS for details.',
+      title: 'Veridicus',
+      body: 'Apply workflow failed — open Veridicus for details.',
     })
   })
 
@@ -121,7 +121,7 @@ describe('notification preference storage', () => {
 describe('sendDesktopNotification', () => {
   it('resolves false outside the Tauri shell instead of throwing', async () => {
     vi.stubGlobal('window', {})
-    await expect(sendDesktopNotification({ title: 'CareerOS', body: 'Run finished.' })).resolves.toBe(
+    await expect(sendDesktopNotification({ title: 'Veridicus', body: 'Run finished.' })).resolves.toBe(
       false,
     )
   })

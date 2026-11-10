@@ -1,8 +1,8 @@
-# CareerOS
+# Veridicus
 
 [![CI](https://github.com/RadioMan18/careeros/actions/workflows/ci.yml/badge.svg)](https://github.com/RadioMan18/careeros/actions/workflows/ci.yml)
 
-Privacy-first job search OS with honesty guardrails. CareerOS is a Tauri 2 desktop application (Rust + React + TypeScript) that runs the whole application workflow — scrape a posting, tailor a resume and cover letter, compile PDFs, practice the interview, follow up — while only ever stating facts the candidate has verified.
+Privacy-first job search OS with honesty guardrails. Veridicus is a Tauri 2 desktop application (Rust + React + TypeScript) that runs the whole application workflow — scrape a posting, tailor a resume and cover letter, compile PDFs, practice the interview, follow up — while only ever stating facts the candidate has verified.
 
 Every generated sentence is grounded in a **Claims Ledger** of confirmed facts; a model that invents, pads or contradicts the ledger is rejected and retried rather than shipped. All inference is local through Ollama, so resumes and job descriptions never leave the machine.
 
@@ -33,8 +33,8 @@ Each stage emits progress and can be cancelled; artifacts are previewed in the a
 ### Documents
 
 - **Tailored resume** — written in your own resume voice (bold capitals headline, professional summary, grouped competencies, labelled bullets), and its structure is validated, not just prose: each role keeps the employer, title and date range from your base resume, and Education may only contain degrees, credentials and institutions. A resume that loses its dates or files a role under Education is repaired deterministically (dates copied back from the base resume, the duplicate removed from Education) instead of failing the apply.
-- **Cover letter** — five paragraphs and 350–480 words, ending with a paragraph that names each required gap plainly. The model writes the body; CareerOS composes the letterhead, date, recipient block, salutation and signature so the letter is a letter, the salutation always names the posting's employer, and the sign-off never collapses into one line.
-- **Prompt templates you can edit** — plain Markdown in `Documents/CareerOS/.careeros/skills/`, one file per skill, where the body is the whole system prompt. Shipped templates carry a version; on upgrade the old file is kept as `<skill>.md.v<old>.bak`.
+- **Cover letter** — five paragraphs and 350–480 words, ending with a paragraph that names each required gap plainly. The model writes the body; Veridicus composes the letterhead, date, recipient block, salutation and signature so the letter is a letter, the salutation always names the posting's employer, and the sign-off never collapses into one line.
+- **Prompt templates you can edit** — plain Markdown in `Documents/Veridicus/.veridicus/skills/`, one file per skill, where the body is the whole system prompt. Shipped templates carry a version; on upgrade the old file is kept as `<skill>.md.v<old>.bak`.
 - **Outputs** — Typst PDF, plus ATS-oriented DOCX and ODT export of the master resume.
 
 ### Interview practice
@@ -111,7 +111,7 @@ ollama pull gemma4:12b
 npm run tauri dev
 ```
 
-`npm run tauri dev` builds the Rust side and opens the app. It relies on the `default-run = "careeros"` key in `src-tauri/Cargo.toml`, because the package also contains the `smoke_apply` harness binary behind the off-by-default `smoke-harness` feature. That harness is run explicitly:
+`npm run tauri dev` builds the Rust side and opens the app. It relies on the `default-run = "veridicus"` key in `src-tauri/Cargo.toml`, because the package also contains the `smoke_apply` harness binary behind the off-by-default `smoke-harness` feature. That harness is run explicitly:
 
 ```bash
 cd src-tauri && cargo run --features smoke-harness --bin smoke_apply
@@ -175,22 +175,22 @@ src-tauri/src/
 
 ## Where your data lives
 
-Everything is under `Documents/CareerOS/`:
+Everything is under `Documents/Veridicus/`:
 
-- `careeros.db` — the encrypted ledger and settings
+- `veridicus.db` — the encrypted ledger and settings
 - `applications.csv` — a plain-text mirror of the application ledger
-- `.careeros/skills/` — editable prompt templates, with `.bak` copies of upgraded versions
+- `.veridicus/skills/` — editable prompt templates, with `.bak` copies of upgraded versions
 - per-application folders — generated Markdown, PDFs and a Git history of the workspace
 
 ## Privacy
 
 - Inference runs locally through Ollama; documents are never sent to a hosted model.
 - The ledger is encrypted at rest with SQLCipher.
-- The only outbound requests are the job posting URLs you explicitly ask CareerOS to read, and Ollama on localhost.
+- The only outbound requests are the job posting URLs you explicitly ask Veridicus to read, and Ollama on localhost.
 
 ## Compliance and standards evidence
 
-CareerOS records enough about each run that the honesty guardrails can be examined rather than taken on trust. The design is informed by **NIST AI RMF 1.0** and its Generative AI Profile (**NIST AI 600-1**), and by **ISO/IEC 42001:2023**, with ISO/IEC 23894 and ISO/IEC 42005 as guidance.
+Veridicus records enough about each run that the honesty guardrails can be examined rather than taken on trust. The design is informed by **NIST AI RMF 1.0** and its Generative AI Profile (**NIST AI 600-1**), and by **ISO/IEC 42001:2023**, with ISO/IEC 23894 and ISO/IEC 42005 as guidance.
 
 This is **alignment evidence, not certification**. NIST AI RMF is voluntary, and ISO/IEC 42001 certifies an organization's AI management system rather than an application. The policy, RACI, objectives, impact assessment and Statement of Applicability are drafts awaiting signature, and no internal audit or management review has been performed.
 

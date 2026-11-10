@@ -35,7 +35,7 @@ class ErrorBoundary extends Component<Props, State> {
           <div className="w-full max-w-lg space-y-4 rounded-xl border border-aether-error/50 bg-aether-surface p-6 shadow-xl">
             <h1 className="text-section font-semibold text-aether-error">Application Error</h1>
             <p className="text-body text-aether-text-muted">
-              CareerOS encountered an unexpected error while rendering:
+              Veridicus encountered an unexpected error while rendering:
             </p>
             <pre className="max-h-48 overflow-auto rounded border border-aether-border bg-aether-bg p-3 font-mono text-meta text-aether-error">
               {message}

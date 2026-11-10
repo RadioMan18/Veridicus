@@ -12,11 +12,11 @@ requirements are in the purchased ISO/IEC 42001:2023 text.
 ## 1. Purpose and scope
 
 This Statement of Applicability (SoA) records every Annex A control in ISO/IEC 42001:2023, whether it
-is applicable to the CareerOS demonstrator, the justification, and the evidence that implements or
+is applicable to the Veridicus demonstrator, the justification, and the evidence that implements or
 supports it. It also records the clause-level evidence for the management-system requirements that
 matter most to this demonstrator.
 
-**Scope of the AI management system:** the local, single-user CareerOS Desktop application, its
+**Scope of the AI management system:** the local, single-user Veridicus Desktop application, its
 honesty guardrails, local model use, claims ledger, generated documents, audit record, disclosure and
 incident flow.
 
@@ -71,7 +71,7 @@ application submission, employment screening or selection decisions, and legal o
 | A.6.2.6 | AI system operation and monitoring | Yes | Blocks, overrides, incidents and reviews must be monitored. | Implemented | `/honesty-stats`; Settings honesty panel; 90-day review record |
 | A.6.2.7 | AI system technical documentation | Yes | Users and auditors need a technical description and limits. | Implemented | AI-SYSTEM-CARD; GUARDRAIL-METHOD; this SoA |
 | A.6.2.8 | AI system recording of event logs | Yes | Generation and approval decisions must be reconstructable. | Implemented | `applications/<id>/audit/events.jsonl`; model/rule/document hashes |
-| A.7.2 | Data for development and enhancement of AI system | No | CareerOS does not train, fine-tune or enhance a model; it uses a third-party local model at runtime. | Not applicable | Revisit if training, fine-tuning or a feedback-trained model is added |
+| A.7.2 | Data for development and enhancement of AI system | No | Veridicus does not train, fine-tune or enhance a model; it uses a third-party local model at runtime. | Not applicable | Revisit if training, fine-tuning or a feedback-trained model is added |
 | A.7.3 | Acquisition of data | Yes | Claims, resumes and postings are acquired from the user or the web and need lawful, authorized handling. | Implemented | Setup wizard; resume import; claims confirmation; system card |
 | A.7.4 | Quality of data for AI systems | Yes | False, stale or weakly evidenced claims undermine every output. | Partial | Provenance fields; weak-provenance advisory; legacy claims still `unspecified` |
 | A.7.5 | Data provenance | Yes | Claims must trace to evidence, verifier and confirmation time. | Implemented | `evidence_type`; reference; SHA-256 fingerprint; `verified_by`; `verify_claim_evidence` |

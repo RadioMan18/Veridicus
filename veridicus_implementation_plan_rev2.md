@@ -1,6 +1,6 @@
-# CareerOS Desktop — Phased Implementation Plan (Rev2)
+# Veridicus Desktop — Phased Implementation Plan (Rev2)
 
-This document details the engineering roadmap for **CareerOS Desktop (Rev2)**, incorporating the **Honesty Guardrail Verification Engine**, a SQLCipher-encrypted SQLite Claims Ledger, automated Fact-Checking with never-claim scanning, OCR-driven Visual Review Gates, bundled sidecar binaries, and the restored workspace bootstrap, Git engine, skill execution engine, command palette, and Ollama model manager.
+This document details the engineering roadmap for **Veridicus Desktop (Rev2)**, incorporating the **Honesty Guardrail Verification Engine**, a SQLCipher-encrypted SQLite Claims Ledger, automated Fact-Checking with never-claim scanning, OCR-driven Visual Review Gates, bundled sidecar binaries, and the restored workspace bootstrap, Git engine, skill execution engine, command palette, and Ollama model manager.
 
 > **Revision Notes (Rev2):** Restores workspace bootstrap + Git init (Phase 1), OllamaManager UI (Phase 2), skills.rs guardrailed generation engine (Phase 3), and CommandPalette + full slash-command set (Phase 4) from the archived originals. Adds SQLCipher key provisioning (no plaintext migration — encrypted from day one), requirement tiers on gaps, early `PENDING_REVIEW` application records, pre-generation clarification, exact-wording auto-promotion with passive toast, employer-consistency warnings (claims, metrics, full-text similarity), hardened metric regex, mdast-style AST diffing, OCR + `pdftotext -bbox` visual QA, presentation-rule editor, log analysis over `daily-log.md`, CSV↔SQLite sync, and bundled prebuilt `typst` / Poppler / Tesseract sidecars (no MSVC compilation). The `forms` rule scope was dropped.
 
@@ -20,7 +20,7 @@ This document details the engineering roadmap for **CareerOS Desktop (Rev2)**, i
 - ✅ **Project Infrastructure:** Tauri v2 app scaffold created with React + TypeScript frontend
 - ✅ **Rust Dependencies:** `src-tauri/Cargo.toml` configured with all required crates (`rusqlite` + `bundled-sqlcipher`, `git2`, `tokio`, `serde`, `uuid`, `chrono`, `comrak`, `pbkdf2`, `hmac`, `rand`, `dirs`, `tauri`, `windows` for PasswordVault)
 - ✅ **OpenSSL Setup (Windows/MSVC):** `.cargo/config.toml` configured with `OPENSSL_DIR`, `OPENSSL_LIB_DIR`, `OPENSSL_INCLUDE_DIR`, `OPENSSL_NO_VENDOR=1`
-- ✅ **Workspace Bootstrap (`src-tauri/src/workspace.rs`):** `initialize_workspace()` command creates `~/Documents/CareerOS/` directory tree with all mandatory subdirs (`templates/`, `.careeros/skills/`, `.careeros/agents/`, `master/`, `applications/`) and seeds `applications.csv` + `SYSTEM.md`
+- ✅ **Workspace Bootstrap (`src-tauri/src/workspace.rs`):** `initialize_workspace()` command creates `~/Documents/Veridicus/` directory tree with all mandatory subdirs (`templates/`, `.veridicus/skills/`, `.veridicus/agents/`, `master/`, `applications/`) and seeds `applications.csv` + `SYSTEM.md`
 - ✅ **SQLCipher Database (`src-tauri/src/db.rs`):** `init_encrypted_database()` applies 32-byte key via `sqlite3_key()` C API before schema; DDL for `claims`, `rules`, `gaps`, `application_records` tables; recovery code wrapping with PBKDF2 100k iterations + AES-256-GCM; `verify_sqlcipher_cmd()` startup health check
 - ✅ **Claims Ledger IPC (`src-tauri/src/claims.rs`):** Full CRUD for claims (`create_claim`, `get_claim`, `list_claims`, `update_claim`, `delete_claim`) and rules (`create_rule`, `list_rules`, `update_rule`, `get_rule`, `delete_rule`, `get_presentation_rules`, `save_presentation_rule`); presentation rule editor with date policy, tenure phrasing, employer-neutral metric toggle
 - ✅ **Git Integration (`src-tauri/src/git_engine.rs`):** Repository initialization, auto-commit via `git2` with proper signature/config
@@ -72,7 +72,7 @@ This document details the engineering roadmap for **CareerOS Desktop (Rev2)**, i
 * **Web Scraping:** Rust (`reqwest` + `scraper` + `htmd` for HTML-to-Markdown)
 * **Document Compilation:** Typst CLI (bundled sidecar) + `pdftoppm` / `pdftotext` (bundled Poppler) + Tesseract OCR (bundled) — all official prebuilt Windows binaries, no MSVC compilation
 * **Structural Diff:** `comrak` Markdown AST parsing (mdast-style structural diffing)
-* **Storage & Audit:** SQLCipher-encrypted SQLite (`rusqlite` + `bundled-sqlcipher`), Local File System (`~/Documents/CareerOS/`), Embedded Git (`git2` crate)
+* **Storage & Audit:** SQLCipher-encrypted SQLite (`rusqlite` + `bundled-sqlcipher`), Local File System (`~/Documents/Veridicus/`), Embedded Git (`git2` crate)
 * **Key Management:** Windows PasswordVault + PBKDF2/AES-256-GCM wrapped recovery code
 
 ---
@@ -80,7 +80,7 @@ This document details the engineering roadmap for **CareerOS Desktop (Rev2)**, i
 ## Phase 1: Core Shell, Workspace Bootstrap, SQLCipher Claims Ledger & Git Infrastructure
 
 ### Objective
-Establish the Tauri v2 desktop application workspace, bootstrap the directory structure and seed files, initialize the SQLCipher-encrypted `careeros.db` with the four-entity schema, expose Claims Ledger and Rules IPC commands, and configure automated local Git commits.
+Establish the Tauri v2 desktop application workspace, bootstrap the directory structure and seed files, initialize the SQLCipher-encrypted `veridicus.db` with the four-entity schema, expose Claims Ledger and Rules IPC commands, and configure automated local Git commits.
 
 ### Implementation Tasks
 
@@ -91,8 +91,8 @@ Establish the Tauri v2 desktop application workspace, bootstrap the directory st
    - [x] **OpenSSL setup (Windows/MSVC):** install the full Shining Light OpenSSL (Win64); set `OPENSSL_NO_VENDOR=1`; copy `lib\VC\x64\MT\*.lib` to `target\openssl-lib`; configure `.cargo/config.toml` with `OPENSSL_DIR`, `OPENSSL_LIB_DIR`, `OPENSSL_INCLUDE_DIR`.
 
 2. **Workspace Setup & System Initialization (`src-tauri/src/workspace.rs`):**
-   - [x] Automated directory bootstrap for `~/Documents/CareerOS/`.
-   - [x] Create base folders (`templates/`, `.careeros/skills/`, `.careeros/agents/`, `master/`, `applications/`).
+   - [x] Automated directory bootstrap for `~/Documents/Veridicus/`.
+   - [x] Create base folders (`templates/`, `.veridicus/skills/`, `.veridicus/agents/`, `master/`, `applications/`).
    - [x] Seed default system prompts (`SYSTEM.md`, default `applications.csv`).
 
 3. **SQLCipher Database Initialization (`src-tauri/src/db.rs`):**
@@ -110,7 +110,7 @@ Establish the Tauri v2 desktop application workspace, bootstrap the directory st
    - [x] Presentation-rule editor UI: date policy per section, tenure phrasing (e.g., *extensive* vs years count), employer-neutral metric toggle — persisted to the `rules` table.
 
 5. **Git Integration Engine (`src-tauri/src/git_engine.rs`):**
-   - [x] Initialize local Git repository inside `~/Documents/CareerOS/` using `git2`.
+   - [x] Initialize local Git repository inside `~/Documents/Veridicus/` using `git2`.
    - [x] Expose Rust command to auto-commit changes after application logs or profile updates.
 
 ### Key Code Implementation
@@ -130,12 +130,12 @@ pub struct WorkspaceStatus {
 #[tauri::command]
 pub fn initialize_workspace() -> Result<WorkspaceStatus, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
 
     let subdirs = vec![
         "templates",
-        ".careeros/skills",
-        ".careeros/agents",
+        ".veridicus/skills",
+        ".veridicus/agents",
         "master",
         "applications",
     ];
@@ -307,7 +307,7 @@ pub fn init_encrypted_database(db_path: &PathBuf, key: &[u8]) -> Result<()> {
 - **Compilation:** Clean build with zero code warnings
 - **Security:** Encrypted database from day one, fail-closed key validation
 - **Integration:** All Tauri IPC commands registered and functional
-- **Workspace:** Mandatory `~/Documents/CareerOS/` structure bootstrapped
+- **Workspace:** Mandatory `~/Documents/Veridicus/` structure bootstrapped
 - **Git:** Automated commit capability verified and tested
 
 **NEXT STEP:** Ready to proceed to Phase 2 (Local Ollama Engine, Web Scraper & Gap Analyzer Engine)
@@ -334,7 +334,7 @@ Create a guided first-run experience that collects essential user data (profile,
 
 2. **Setup Wizard Frontend (`src/components/SetupWizard.tsx`):**
    - Multi-step modal with progress indicator
-   - Step 1: Welcome — brief intro to CareerOS
+   - Step 1: Welcome — brief intro to Veridicus
    - Step 2: Professional Profile — name, email, phone, location, LinkedIn, GitHub, target roles
    - Step 3: Master Resume — text area or file upload
    - Step 4: Claims Verification — auto-extracted claims with checkboxes for user review
@@ -409,8 +409,8 @@ pub fn get_setup_wizard_state(
 
 ### Integration with Existing Infrastructure
 
-- **Workspace:** Uses existing `~/Documents/CareerOS/` directory
-- **Database:** Uses existing `careeros.db` with new `app_settings` table
+- **Workspace:** Uses existing `~/Documents/Veridicus/` directory
+- **Database:** Uses existing `veridicus.db` with new `app_settings` table
 - **Claims:** Saves user-verified claims to `claims` table
 - **Rules:** Saves presentation rules to `rules` table
 - **Daily Log:** Appends setup completion entry to `daily-log.md`
@@ -432,7 +432,7 @@ pub fn get_setup_wizard_state(
 ## Phase 2: Local Ollama Engine, Web Scraper & Gap Analyzer Engine
 
 ### Objective
-Connect CareerOS to the local Ollama daemon for model discovery, selection, and model downloading; integrate the Rust-native HTTP scraper; and build the **JD Analyzer & Gap Engine** that splits postings into must-haves, nice-to-haves, and gate items, mapping them against the Claims Ledger.
+Connect Veridicus to the local Ollama daemon for model discovery, selection, and model downloading; integrate the Rust-native HTTP scraper; and build the **JD Analyzer & Gap Engine** that splits postings into must-haves, nice-to-haves, and gate items, mapping them against the Claims Ledger.
 
 ### Implementation Tasks
 
@@ -599,7 +599,7 @@ export const OllamaManager: React.FC = () => {
 * [x] **Ollama Integration Test:** `cargo check` confirms Ollama REST client compiles and all 9 Tauri commands are registered without errors.
 
 #### Manual Verification Checklist (HITL Gate)
-* [x] Open CareerOS; compile with `cargo build` confirms all new Tauri commands register successfully.
+* [x] Open Veridicus; compile with `cargo build` confirms all new Tauri commands register successfully.
 * [x] Verify `/ ollama health check` endpoint works against running daemon.
 * [x] Pull a lightweight test model through the backend `pull_ollama_model` command.
 * [x] Execute `scrape_job_page` against a known public posting URL; verify clean Markdown output with title and requirements.
@@ -618,7 +618,7 @@ Build the guardrailed document generation pipeline: the skill execution engine t
 ### Implementation Tasks
 
 1. **Skill Execution Engine (`src-tauri/src/skills.rs`):**
-   * Load system prompts (`SYSTEM.md`), master resume (`master/resume.md`), and skill templates (`.careeros/skills/resume-tailor.md`, `cover-letter.md`, `jd-analyzer.md`, `star-builder.md`, `negotiation-coach.md`).
+   * Load system prompts (`SYSTEM.md`), master resume (`master/resume.md`), and skill templates (`.veridicus/skills/resume-tailor.md`, `cover-letter.md`, `jd-analyzer.md`, `star-builder.md`, `negotiation-coach.md`).
    * Assemble the guardrailed prompt: confirmed claims only, active `never_claim` / `exact_wording` / `presentation` rules injected; `needs-confirmation` claims excluded; `ask_first` items pause for a user modal before generation.
    * Invoke the deep Ollama model, extract Markdown, map to `.typ` output.
 
@@ -1049,5 +1049,5 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ isOpen, onClose 
 
 **Build Verification:** `cargo build` passes clean (6 minor warnings only). Phase 4 code pushed to `origin/main` (commit `a518536`).
 
-**FINAL SYSTEM ACCEPTANCE GATE:** CareerOS Desktop Rev2 successfully generates tailored, 100% verified application packages locally — no cloud leaks, no false claims, encrypted ledger at rest, and bundled binaries requiring no PATH installation. All four phases complete.
+**FINAL SYSTEM ACCEPTANCE GATE:** Veridicus Desktop Rev2 successfully generates tailored, 100% verified application packages locally — no cloud leaks, no false claims, encrypted ledger at rest, and bundled binaries requiring no PATH installation. All four phases complete.
 

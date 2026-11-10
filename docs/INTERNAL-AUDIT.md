@@ -11,7 +11,7 @@ audit and does not establish conformity.
 
 ## 1. Purpose
 
-This procedure defines how the operating organization audits the CareerOS AI management system and its
+This procedure defines how the operating organization audits the Veridicus AI management system and its
 honesty guardrails. It supports ISO/IEC 42001 clause 9.2 and the improvement requirements in clause 10.
 
 The audit asks a simple question: does the evidence support the claim? It is not a code review only,

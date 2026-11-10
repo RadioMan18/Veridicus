@@ -1,4 +1,4 @@
-//! Web scraper & Markdown converter for CareerOS.
+//! Web scraper & Markdown converter for Veridicus.
 //!
 //! Fetches job posting pages, strips HTML noise, converts main content to Markdown,
 //! and saves dated files to the user's workspace.
@@ -25,7 +25,7 @@ pub struct JobScrapeResult {
 #[tauri::command]
 pub async fn scrape_job_page(url: String) -> Result<JobScrapeResult, String> {
     let client = Client::builder()
-        .user_agent("CareerOS/2.0 job-scraper")
+        .user_agent("Veridicus/2.0 job-scraper")
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| format!("Failed to build HTTP client: {}", e))?;

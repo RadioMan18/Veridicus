@@ -1,16 +1,16 @@
-# AI system impact assessment — CareerOS honesty guardrails
+# AI system impact assessment — Veridicus honesty guardrails
 
 **Artifact ID:** C-08
 **Version:** 2.0 (supersedes the initial 2026-11-07 assessment)
 **Framework:** ISO/IEC 42001:2023 clauses 6.1.4 / 8.4 and Annex A.5.2–A.5.5; method informed by
 ISO/IEC 42005:2025.
-**Scope:** the honesty and guardrail behavior of CareerOS Desktop. Privacy, security, fairness and
+**Scope:** the honesty and guardrail behavior of Veridicus Desktop. Privacy, security, fairness and
 accessibility are considered where they affect truthful output; they are not fully assessed here.
 **Status:** working assessment for the demonstrator. Owner sign-off: **pending**.
 
 ## 1. System and context
 
-CareerOS generates job-application documents from a user-confirmed claims ledger using a local
+Veridicus generates job-application documents from a user-confirmed claims ledger using a local
 language model. The user reviews and approves the result. The application does not submit
 applications, rank candidates or make employment decisions.
 
@@ -56,7 +56,7 @@ risk measurement is made.
 | **I-4** | **Loss of recourse** | A false statement is submitted; the user cannot correct the record, the employer has no route to challenge it, and the local incident log is not an independent appeal. | High | Medium | Human approval before submission; incident reporting and export; concerns channel; appeal to an independent reviewer; disclosure. | Medium–high. The app cannot retract a sent application; external recourse depends on the employer and the operator. |
 | **I-5** | **Omission of a material gap** | The letter fails to name a must-have gap; the user appears to claim a fit they do not have. | Medium | Medium | Required gaps injected into the letter prompt; naming check; block on omission; per-application gap selection remains partly manual. | Low. |
 | **I-6** | **False block / over-blocking** | A true statement is rejected; the user overrides routinely or abandons a valid application. | Medium | Medium | Advisory versus blocking distinction; written override; false-block incident category; evaluation fixtures; 90-day review. | Medium. Override fatigue is a monitoring signal, not a solved problem. |
-| **I-7** | **Privacy of claims** | Sensitive claim content leaves the machine through a hosted model or a shared workspace. | High | Low | Local Ollama; encrypted SQLCipher database; no hosted inference by CareerOS; local audit records. | Low, contingent on the user's machine and model configuration. |
+| **I-7** | **Privacy of claims** | Sensitive claim content leaves the machine through a hosted model or a shared workspace. | High | Low | Local Ollama; encrypted SQLCipher database; no hosted inference by Veridicus; local audit records. | Low, contingent on the user's machine and model configuration. |
 | **I-8** | **Instruction injection** | A posting contains instructions that try to make the model ignore the ledger or the guardrails. | Medium | Medium | Posting delimited as data; instruction-like lines detected; finding and audit note recorded; deterministic gate still applies. | Low–medium. Detection is heuristic; a missed attempt is possible. |
 | **I-9** | **Discriminatory or protected-trait inference** | Generated wording or a claim references a protected characteristic, or the tool is repurposed for screening. | High | Low | Intended-use restriction; no screening features; prohibited-use policy; review and incident channel. | Medium. The system is not a fairness engine; this needs a separate assessment if use changes. |
 | **I-10** | **False reassurance from a clean report** | A clean deterministic report is read as “the document is true” rather than “the checked patterns passed.” | Medium | Medium | System card limits; advisory/deterministic distinction; disclosure; audit record shows what was checked. | Low if the limits are read. |

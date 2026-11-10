@@ -1,6 +1,6 @@
 # Guardrail method
 
-**Scope:** how CareerOS decides whether a generated document is allowed to be committed.
+**Scope:** how Veridicus decides whether a generated document is allowed to be committed.
 **Code of record:** `src-tauri/src/guardrails.rs`, `fact_check.rs`, `scope_review.rs`.
 
 ## Authority order

@@ -1,4 +1,4 @@
-//! Resume exporter for CareerOS — multi-format output (PDF/DOCX/ODT).
+//! Resume exporter for Veridicus — multi-format output (PDF/DOCX/ODT).
 //!
 //! Exports ATS-optimized resume markdown to PDF via Typst sidecar,
 //! DOCX via manual XML generation, and ODT via manual XML generation.
@@ -388,7 +388,7 @@ fn generate_odt_meta_xml() -> String {
 <office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
 office:version="1.2">
 <office:meta>
-<dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">CareerOS Resume</dc:title>
+<dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Veridicus Resume</dc:title>
 <dc:date xmlns:dc="http://purl.org/dc/elements/1.1/"></dc:date>
 </office:meta>
 </office:document-meta>"#
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn generated_docx_has_valid_package_relationships_and_document_parts() {
         let output_path = std::env::temp_dir().join(format!(
-            "careeros-docx-test-{}.docx",
+            "veridicus-docx-test-{}.docx",
             uuid::Uuid::new_v4()
         ));
         generate_docx(

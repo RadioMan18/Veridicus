@@ -1,4 +1,4 @@
-//! Fact-Check Pass Engine for CareerOS.
+//! Fact-Check Pass Engine for Veridicus.
 //!
 //! Hardened automated fact-checking: metric extraction with qualifiers preserved,
 //! never_claim subject scan, scope-lock verification, AST structural diff via comrak,

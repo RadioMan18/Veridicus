@@ -6,12 +6,12 @@
 //!
 //! ```text
 //! cd src-tauri
-//! CAREEROS_SMOKE_EMPLOYER=Aurora \
-//! CAREEROS_SMOKE_ROLE="Learning and Development Lead" \
+//! VERIDICUS_SMOKE_EMPLOYER=Aurora \
+//! VERIDICUS_SMOKE_ROLE="Learning and Development Lead" \
 //! cargo run --features smoke-harness --bin smoke_apply
 //! ```
 //!
-//! Requires a running Ollama daemon and the real `Documents/CareerOS` workspace.
+//! Requires a running Ollama daemon and the real `Documents/Veridicus` workspace.
 //! It writes one PENDING_REVIEW application and never commits it. It is a `bin`
 //! rather than an `example` because tauri-build applies its Windows manifest link
 //! arguments to bins only; an example binary fails to load (`0xc0000139`).
@@ -71,7 +71,7 @@ pub struct AppState {
 fn workspace_root() -> std::path::PathBuf {
     dirs::document_dir()
         .expect("documents directory")
-        .join("CareerOS")
+        .join("Veridicus")
 }
 
 fn short(value: Option<&str>, max: usize) -> String {
@@ -148,7 +148,7 @@ fn main() {
 
     // Maintenance mode: exercise stages 4 and 5 against an application that
     // already has documents, without rerunning the stochastic apply pipeline.
-    if let Ok(app_id) = std::env::var("CAREEROS_SMOKE_REVIEW_APP") {
+    if let Ok(app_id) = std::env::var("VERIDICUS_SMOKE_REVIEW_APP") {
         let review_state = state.clone();
         let review_id = app_id.clone();
         let review = tauri::async_runtime::block_on(async move {
@@ -198,7 +198,7 @@ fn main() {
     }
 
     // Maintenance mode: repair a ledger polluted by the pre-fix DOCX parser.
-    if std::env::var("CAREEROS_REBUILD_LEDGER").is_ok() {
+    if std::env::var("VERIDICUS_REBUILD_LEDGER").is_ok() {
         let db_path = state
             .db_path
             .lock()
@@ -220,10 +220,10 @@ fn main() {
         return;
     }
 
-    let url = std::env::var("CAREEROS_SMOKE_JD_URL")
+    let url = std::env::var("VERIDICUS_SMOKE_JD_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:8765/smoke-posting.html".to_string());
-    let employer = std::env::var("CAREEROS_SMOKE_EMPLOYER").ok();
-    let role = std::env::var("CAREEROS_SMOKE_ROLE").ok();
+    let employer = std::env::var("VERIDICUS_SMOKE_EMPLOYER").ok();
+    let role = std::env::var("VERIDICUS_SMOKE_ROLE").ok();
     println!("posting: {url}");
 
     let apply_state = state.clone();
@@ -390,7 +390,7 @@ fn main() {
 
     // Optional stage 4/5 verification on the application just generated: the
     // recruiter review command and the pack assembly must both produce files.
-    if std::env::var("CAREEROS_SMOKE_REVIEW").is_ok() {
+    if std::env::var("VERIDICUS_SMOKE_REVIEW").is_ok() {
         let review_state = state.clone();
         let review_id = result.application_id.clone();
         let review = tauri::async_runtime::block_on(async move {

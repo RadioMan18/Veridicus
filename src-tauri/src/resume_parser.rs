@@ -1,4 +1,4 @@
-//! Multi-format resume text extraction for CareerOS.
+//! Multi-format resume text extraction for Veridicus.
 //!
 //! Supports PDF (via pdftotext sidecar), DOCX (via zip + regex), and ODT
 //! (via zip + regex). Extracts plain text suitable for claim parsing and

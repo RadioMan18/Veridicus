@@ -5,7 +5,7 @@ use crate::AppState;
 #[tauri::command]
 pub fn init_repository(_state: State<'_, AppState>) -> Result<(), String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
 
     let repo = match Repository::open(&workspace_root) {
         Ok(repo) => repo,
@@ -15,9 +15,9 @@ pub fn init_repository(_state: State<'_, AppState>) -> Result<(), String> {
 
     let mut config = repo.config()
         .map_err(|e| format!("Failed to get git config: {}", e))?;
-    config.set_str("user.email", "careeros@localhost")
+    config.set_str("user.email", "veridicus@localhost")
         .map_err(|e| format!("Failed to set git config: {}", e))?;
-    config.set_str("user.name", "CareerOS")
+    config.set_str("user.name", "Veridicus")
         .map_err(|e| format!("Failed to set git config: {}", e))?;
 
     Ok(())
@@ -29,7 +29,7 @@ pub fn commit_changes(
     message: String,
 ) -> Result<String, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
 
     let repo = Repository::open(&workspace_root)
         .map_err(|e| format!("Failed to open git repo: {}", e))?;
@@ -44,7 +44,7 @@ pub fn commit_changes(
     let tree = repo.find_tree(tree_oid)
         .map_err(|e| format!("Failed to find tree: {}", e))?;
 
-    let sig = Signature::now("CareerOS", "careeros@localhost")
+    let sig = Signature::now("Veridicus", "veridicus@localhost")
         .map_err(|e| format!("Failed to create signature: {}", e))?;
 
     let parent = match repo.head() {
@@ -74,7 +74,7 @@ pub fn get_commit_history(
     _state: State<'_, AppState>
 ) -> Result<Vec<String>, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
 
     let repo = Repository::open(&workspace_root)
         .map_err(|e| format!("Failed to open git repo: {}", e))?;
@@ -105,7 +105,7 @@ pub fn get_git_status(
     _state: State<'_, AppState>
 ) -> Result<String, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
 
     let repo = Repository::open(&workspace_root)
         .map_err(|e| format!("Failed to open git repo: {}", e))?;

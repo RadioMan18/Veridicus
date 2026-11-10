@@ -21,7 +21,9 @@ import {
 export type ChimeMode = 'background' | 'always' | 'off';
 export type ChimeKind = 'success' | 'failure';
 
-const STORAGE_KEY = 'careeros:completion-sound';
+const STORAGE_KEY = 'veridicus:completion-sound';
+/** Written by builds before the rename; read once so the preference survives it. */
+const LEGACY_STORAGE_KEY = 'careeros:completion-sound';
 const DEFAULT_MODE: ChimeMode = 'background';
 /** Runs shorter than this are silent; the sound is for runs that outlived your attention. */
 export const MIN_CHIME_RUN_MS = MIN_NOTIFY_RUN_MS;
@@ -30,7 +32,7 @@ const BURST_GUARD_MS = 400;
 
 export function readChimeMode(): ChimeMode {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
     if (stored === 'always' || stored === 'off' || stored === 'background') {
       return stored;
     }

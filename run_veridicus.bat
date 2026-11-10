@@ -1,20 +1,20 @@
 @echo off
 setlocal enabledelayedexpansion
 
-rem CareerOS launcher.
-rem   run_careeros.bat             launch (release build if present, else dev mode)
-rem   run_careeros.bat --rebuild   recompile the release binary, then launch
+rem Veridicus launcher.
+rem   run_veridicus.bat             launch (release build if present, else dev mode)
+rem   run_veridicus.bat --rebuild   recompile the release binary, then launch
 rem Works from any directory, including double-clicking this file.
 
 cd /d "%~dp0"
 
 echo ========================================
-echo CareerOS Desktop Launcher
+echo Veridicus Desktop Launcher
 echo ========================================
 echo.
 
 if not exist "src-tauri\Cargo.toml" (
-echo [ERROR] Must be run from the CareerOS root directory
+echo [ERROR] Must be run from the Veridicus root directory
 echo         Current directory: %CD%
 pause
 exit /b 1
@@ -40,8 +40,8 @@ echo [WARN] OpenSSL not found in "C:\Program Files\OpenSSL-Win64"
 echo        Release builds need it. Set OPENSSL_DIR and rerun.
 )
 
-set "LOG=%TEMP%\careeros_launcher.log"
-set "EXE=src-tauri\target\release\careeros.exe"
+set "LOG=%TEMP%\veridicus_launcher.log"
+set "EXE=src-tauri\target\release\veridicus.exe"
 set "REBUILD=0"
 if /i "%~1"=="--rebuild" set "REBUILD=1"
 if /i "%~1"=="-r" set "REBUILD=1"
@@ -61,16 +61,16 @@ exit /b 1
 )
 
 if exist "!EXE!" (
-powershell -NoProfile -Command "$exe = Get-Item 'src-tauri\target\release\careeros.exe'; $newer = (Get-ChildItem 'src','src-tauri\src' -Recurse -Include *.tsx,*.ts,*.css,*.rs -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $exe.LastWriteTime }).Count; if ($newer -gt 0) { Write-Host ('[WARN] ' + $newer + ' source file(s) changed since this build; run run_careeros.bat --rebuild to include them.') }"
+powershell -NoProfile -Command "$exe = Get-Item 'src-tauri\target\release\veridicus.exe'; $newer = (Get-ChildItem 'src','src-tauri\src' -Recurse -Include *.tsx,*.ts,*.css,*.rs -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $exe.LastWriteTime }).Count; if ($newer -gt 0) { Write-Host ('[WARN] ' + $newer + ' source file(s) changed since this build; run run_veridicus.bat --rebuild to include them.') }"
 )
 
-taskkill /F /IM careeros.exe > "%LOG%" 2>&1
+taskkill /F /IM veridicus.exe > "%LOG%" 2>&1
 
 if exist "!EXE!" (
 echo.
-echo [INFO] Starting CareerOS from the release build...
+echo [INFO] Starting Veridicus from the release build...
 start "" "%~dp0!EXE!"
-echo [SUCCESS] CareerOS launched
+echo [SUCCESS] Veridicus launched
 exit /b 0
 )
 
@@ -100,7 +100,7 @@ echo.
 call npm run tauri dev
 if errorlevel 1 (
 echo.
-echo [ERROR] Failed to start CareerOS
+echo [ERROR] Failed to start Veridicus
 pause
 exit /b 1
 )

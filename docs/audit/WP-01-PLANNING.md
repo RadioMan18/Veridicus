@@ -12,7 +12,7 @@
 
 | Field | Entry |
 |---|---|
-| Audit type | First internal audit of the CareerOS AI management system |
+| Audit type | First internal audit of the Veridicus AI management system |
 | Audit ID | IA-________-01 |
 | Audit period | |
 | Planned fieldwork start | |
@@ -29,7 +29,7 @@
 
 | Item | Entry |
 |---|---|
-| Scope | Clauses 4–10 and the 35 selected Annex A controls for the local, single-user CareerOS Desktop |
+| Scope | Clauses 4–10 and the 35 selected Annex A controls for the local, single-user Veridicus Desktop |
 | Exclusions | Model training/fine-tuning; hosted inference; autonomous submission; screening; A.7.2, A.8.5, A.10.4 |
 | Criteria | ISO/IEC 42001:2023 clauses and selected Annex A controls; adopted policy, RACI, objectives, impact assessment and SoA; system card; guardrail method; evidence index |
 | Locations reviewed | `docs/`; application workspace; `compliance/`; code and tests; release record |

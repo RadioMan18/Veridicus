@@ -1,4 +1,4 @@
-//! Gap Analyzer Engine for CareerOS.
+//! Gap Analyzer Engine for Veridicus.
 //!
 //! Analyzes job descriptions against the Claims Ledger to identify:
 //! - Supported qualifications (matched to confirmed claims)

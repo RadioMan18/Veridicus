@@ -11,7 +11,7 @@ them. No baseline has been recorded yet; the first measurement period establishe
 ## 1. Purpose
 
 This document sets measurable objectives for responsible AI and honesty, supporting ISO/IEC 42001
-clause 6.2 and A.9.3. The objectives are deliberately narrow: they measure whether CareerOS keeps
+clause 6.2 and A.9.3. The objectives are deliberately narrow: they measure whether Veridicus keeps
 generated materials grounded, keeps humans in control, and learns from failures.
 
 They are not marketing metrics. A target is met only when the stated evidence exists; absence of

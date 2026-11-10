@@ -1,4 +1,4 @@
-//! Ollama REST client — local LLM engine for CareerOS.
+//! Ollama REST client — local LLM engine for Veridicus.
 //!
 //! Communicates with the local Ollama daemon at http://localhost:11434
 //! for model discovery, pull, and text generation (chat/generate endpoints).

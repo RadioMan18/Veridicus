@@ -5,7 +5,7 @@
 **Effective date:** 2026-11-07
 **Owner:** Accountable Owner
 **Status:** blank operating record. It becomes evidence of adoption only when completed and signed.
-Completing it does not certify CareerOS or establish ISO/IEC 42001 conformity.
+Completing it does not certify Veridicus or establish ISO/IEC 42001 conformity.
 
 ## 1. Purpose
 
@@ -42,7 +42,7 @@ approval blocks; this checklist is the consolidated record.
 | Field | Entry |
 |---|---|
 | Operating organization / legal entity | |
-| System name and version | CareerOS Desktop, version: |
+| System name and version | Veridicus Desktop, version: |
 | Repository or workspace used | |
 | Scope of the AI management system | Local, single-user career-document drafting and honesty guardrails |
 | Explicit exclusions | No model training, hosted inference, autonomous submission, screening or customer distribution |

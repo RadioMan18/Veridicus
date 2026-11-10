@@ -89,7 +89,7 @@ describe('chime preference storage', () => {
   })
 
   it('ignores a value it does not recognise', () => {
-    vi.stubGlobal('localStorage', memoryStorage({ 'careeros:completion-sound': 'loud' }))
+    vi.stubGlobal('localStorage', memoryStorage({ 'veridicus:completion-sound': 'loud' }))
     expect(readChimeMode()).toBe('background')
   })
 

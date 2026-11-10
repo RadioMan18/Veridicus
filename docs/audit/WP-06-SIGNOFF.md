@@ -54,7 +54,7 @@ ______________________________________________________________________________
 ```
 
 **Mandatory statement:** This is an internal audit conclusion. It is not a certification, an
-accreditation, or a declaration that CareerOS or the operating organization conforms to ISO/IEC
+accreditation, or a declaration that Veridicus or the operating organization conforms to ISO/IEC
 42001. No conclusion may be published without the Accountable Owner's acknowledgement and the
 report's limitations.
 

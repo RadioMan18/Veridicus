@@ -100,7 +100,7 @@ fn get_conn(state: &State<'_, AppState>) -> Result<Connection, String> {
     get_db_connection(&db_path_str)
 }
 
-/// Human-readable identity for the person who confirmed a claim. CareerOS is a
+/// Human-readable identity for the person who confirmed a claim. Veridicus is a
 /// single-user desktop app, so the profile name is the strongest identity available.
 pub fn verifier_name(conn: &Connection) -> String {
     conn.query_row(

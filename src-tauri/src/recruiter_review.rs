@@ -239,7 +239,7 @@ fn missing_keywords(application_id: &str) -> Vec<String> {
         return Vec::new();
     };
     let path = docs
-        .join("CareerOS")
+        .join("Veridicus")
         .join("applications")
         .join(application_id)
         .join("fit-matrix.json");
@@ -730,7 +730,7 @@ Never invent facts, numbers or company details. Return JSON only.";
 fn app_dir(application_id: &str) -> Result<std::path::PathBuf, String> {
     let docs = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
     Ok(docs
-        .join("CareerOS")
+        .join("Veridicus")
         .join("applications")
         .join(application_id))
 }

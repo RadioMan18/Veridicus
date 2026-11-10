@@ -358,7 +358,7 @@ fn normalize_focus(raw: Option<&str>) -> Option<&'static str> {
 const ROTATION_FILE: &str = "mock-rotation.json";
 
 fn rotation_path() -> Option<std::path::PathBuf> {
-    dirs::document_dir().map(|docs| docs.join("CareerOS").join(ROTATION_FILE))
+    dirs::document_dir().map(|docs| docs.join("Veridicus").join(ROTATION_FILE))
 }
 
 fn recent_questions() -> Vec<String> {
@@ -393,7 +393,7 @@ const SESSIONS_FILE: &str = "mock-sessions.json";
 const SESSIONS_KEPT: usize = 50;
 
 fn sessions_path() -> Option<std::path::PathBuf> {
-    dirs::document_dir().map(|docs| docs.join("CareerOS").join(SESSIONS_FILE))
+    dirs::document_dir().map(|docs| docs.join("Veridicus").join(SESSIONS_FILE))
 }
 
 fn read_sessions() -> Vec<MockSessionRecord> {
@@ -495,7 +495,7 @@ pub fn save_mock_debrief(
         Some(id) => crate::interview_prep::application_dir(id)?.join("mock-debriefs"),
         None => dirs::document_dir()
             .ok_or("Failed to locate Documents folder")?
-            .join("CareerOS")
+            .join("Veridicus")
             .join("mock-debriefs"),
     };
     std::fs::create_dir_all(&dir)

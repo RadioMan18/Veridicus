@@ -184,7 +184,7 @@ Add every material change in the period.
 
 - [ ] The digest observed at generation matches the digest recorded in the audit event.
 - [ ] A digest change is visible between generation and commit.
-- [ ] No document text is sent to a hosted model by CareerOS.
+- [ ] No document text is sent to a hosted model by Veridicus.
 - [ ] Supplier limitations are reflected in the system card.
 - [ ] The model tag is not treated as immutable without a digest check.
 

@@ -1,4 +1,4 @@
-//! Skill Execution Engine for CareerOS.
+//! Skill Execution Engine for Veridicus.
 //!
 //! Loads system prompts, master resume, and skill templates; assembles
 //! guardrailed prompts using only confirmed claims; invokes the deep Ollama
@@ -232,11 +232,11 @@ fn template_version_of(content: &str) -> u32 {
         .unwrap_or(0)
 }
 
-/// Load a skill template from the workspace `.careeros/skills/` directory.
+/// Load a skill template from the workspace `.veridicus/skills/` directory.
 /// The frontmatter carries metadata; the body is the entire system prompt.
 fn load_skill_template(skill_id: &str, workspace_root: &Path) -> Result<SkillTemplate, String> {
     let template_path = workspace_root
-        .join(".careeros")
+        .join(".veridicus")
         .join("skills")
         .join(format!("{}.md", skill_id));
     if !template_path.exists() {
@@ -367,7 +367,7 @@ Return only JSON with a bullets array; each entry has an original key and a rewr
 /// Create missing shipped templates and upgrade legacy ones, keeping a backup of
 /// whatever was on disk. Returns how many files were written.
 pub fn ensure_default_skill_templates(workspace_root: &Path) -> Result<usize, String> {
-    let skills_dir = workspace_root.join(".careeros").join("skills");
+    let skills_dir = workspace_root.join(".veridicus").join("skills");
     fs::create_dir_all(&skills_dir).map_err(|e| format!("Failed to create skills dir: {}", e))?;
 
     let mut written = 0;
@@ -1657,7 +1657,7 @@ pub async fn execute_skill(
 
     // 4. Load skill template
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let workspace_root = docs_dir.join("CareerOS");
+    let workspace_root = docs_dir.join("Veridicus");
     ensure_default_skill_templates(&workspace_root)?;
     let skill = load_skill_template(&input.skill_id, &workspace_root)?;
 
@@ -1938,7 +1938,7 @@ pub async fn execute_skill(
 #[tauri::command]
 pub fn list_skill_templates() -> Result<Vec<SkillTemplate>, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    let skills_dir = docs_dir.join("CareerOS").join(".careeros").join("skills");
+    let skills_dir = docs_dir.join("Veridicus").join(".veridicus").join("skills");
 
     if !skills_dir.exists() {
         return Ok(vec![]);
@@ -1985,7 +1985,7 @@ pub fn list_skill_templates() -> Result<Vec<SkillTemplate>, String> {
 #[tauri::command]
 pub fn seed_default_skills() -> Result<usize, String> {
     let docs_dir = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
-    ensure_default_skill_templates(&docs_dir.join("CareerOS"))
+    ensure_default_skill_templates(&docs_dir.join("Veridicus"))
 }
 
 #[cfg(test)]
@@ -2459,11 +2459,11 @@ mod template_tests {
             .duration_since(UNIX_EPOCH)
             .map(|duration| duration.as_nanos())
             .unwrap_or(0);
-        std::env::temp_dir().join(format!("careeros-{}-{}-{}", label, std::process::id(), nanos))
+        std::env::temp_dir().join(format!("veridicus-{}-{}-{}", label, std::process::id(), nanos))
     }
 
     fn write_template(root: &Path, id: &str, content: &str) {
-        let dir = root.join(".careeros").join("skills");
+        let dir = root.join(".veridicus").join("skills");
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join(format!("{}.md", id)), content).unwrap();
     }
@@ -2538,7 +2538,7 @@ mod template_tests {
         let root = unique_workspace("seed");
         assert_eq!(ensure_default_skill_templates(&root).unwrap(), 3);
 
-        let dir = root.join(".careeros").join("skills");
+        let dir = root.join(".veridicus").join("skills");
         assert_eq!(
             template_version_of(&fs::read_to_string(dir.join("cover-letter.md")).unwrap()),
             TEMPLATE_VERSION

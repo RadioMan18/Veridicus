@@ -69,9 +69,9 @@ const emptyProfile: UserProfile = {
 };
 
 const stages = [
-  { title: 'Welcome to CareerOS', detail: 'Let’s get your workspace ready so you can explore with confidence.' },
+  { title: 'Welcome to Veridicus', detail: 'Let’s get your workspace ready so you can explore with confidence.' },
   { title: 'Your profile', detail: 'A few details personalize your workspace.' },
-  { title: 'Master resume', detail: 'Add the resume you want CareerOS to work from.' },
+  { title: 'Master resume', detail: 'Add the resume you want Veridicus to work from.' },
   { title: 'Review claims', detail: 'Choose only statements you can personally verify.' },
   { title: 'Local models', detail: 'Connect an Ollama model now or set one up later.' },
   { title: 'Presentation preferences', detail: 'Choose how resume details should be presented.' },
@@ -318,7 +318,7 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
               {stage === 0 && (
                 <div className="space-y-5">
                   <p className="max-w-2xl text-sm leading-6 text-aether-text-muted">
-                    This short guide helps you personalize CareerOS, review resume claims, and choose optional local AI settings. Your workspace stays on this device, and you can skip any part or come back later.
+                    This short guide helps you personalize Veridicus, review resume claims, and choose optional local AI settings. Your workspace stays on this device, and you can skip any part or come back later.
                   </p>
                   <div className="rounded-lg border border-aether-border bg-aether-bg p-4">
                     <h3 className="font-semibold text-aether-text">What we’ll set up</h3>
@@ -448,7 +448,7 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
                     Resume text
                   </label>
                   <p className="mb-3 mt-1 text-sm text-aether-text-muted">
-                    Paste your master resume here. It stays in your local CareerOS workspace; you can also skip this and add it later.
+                    Paste your master resume here. It stays in your local Veridicus workspace; you can also skip this and add it later.
                   </p>
                   <textarea
                     id="master-resume"
@@ -664,7 +664,7 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
                   </div>
                   <h3 className="mt-4 text-lg font-semibold text-aether-text">Setup saved</h3>
                   <p className="mt-2 max-w-xl text-sm leading-6 text-aether-text-muted">
-                    Your profile, verified claims, model choices, and presentation preferences are saved. You’re ready to explore CareerOS; the Setup guide remains available from the top bar.
+                    Your profile, verified claims, model choices, and presentation preferences are saved. You’re ready to explore Veridicus; the Setup guide remains available from the top bar.
                   </p>
                 </div>
               )}
@@ -713,7 +713,7 @@ export default function SetupWizard({ isOpen, onClose, onComplete }: SetupWizard
                 Saving…
               </>
             ) : stage === stages.length ? (
-              'Open CareerOS'
+              'Open Veridicus'
             ) : stage === stages.length - 1 ? (
               <>
                 <Check size={16} />

@@ -1,4 +1,4 @@
-//! Single enforcement point for the CareerOS honesty guardrails.
+//! Single enforcement point for the Veridicus honesty guardrails.
 //!
 //! The model proposes; these checks decide. Every generated document is evaluated
 //! against the active rules, the confirmed claims ledger, the persisted gaps, and

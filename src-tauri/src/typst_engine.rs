@@ -1,4 +1,4 @@
-//! Typst Engine & Visual QA for CareerOS.
+//! Typst Engine & Visual QA for Veridicus.
 //!
 //! Resolves bundled sidecar binaries (typst, pdftoppm, pdftotext) from the app
 //! bundle, compiles .typ to .pdf, rasterizes pages to PNG, and runs layout
@@ -9,10 +9,23 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tauri::{path::BaseDirectory, AppHandle, Manager};
 
-const DOCUMENT_MARKER: &str = "// CareerOS generated Typst document";
-const LEGACY_FONT_MARKER: &str = "// CareerOS default font stack from color_palette/aether-fonts.css";
+const DOCUMENT_MARKER: &str = "// Veridicus generated Typst document";
+const LEGACY_FONT_MARKER: &str = "// Veridicus default font stack from color_palette/aether-fonts.css";
+/// Documents written before the rename keep their old header; they are still
+/// generated documents, so they must not be wrapped a second time.
+const PRE_RENAME_DOCUMENT_MARKER: &str = "// CareerOS generated Typst document";
+const PRE_RENAME_FONT_MARKER: &str =
+    "// CareerOS default font stack from color_palette/aether-fonts.css";
+
+pub(crate) fn is_generated_document(source: &str) -> bool {
+    source.starts_with(DOCUMENT_MARKER) || source.starts_with(PRE_RENAME_DOCUMENT_MARKER)
+}
+
+fn has_pre_rename_font_marker(source: &str) -> bool {
+    source.starts_with(LEGACY_FONT_MARKER) || source.starts_with(PRE_RENAME_FONT_MARKER)
+}
 const DOCUMENT_PREAMBLE: &str = concat!(
-    "// CareerOS generated Typst document\n",
+    "// Veridicus generated Typst document\n",
     "#set page(margin: (x: 0.8in, y: 0.7in))\n",
     "#set text(font: (\"Segoe UI\", \"Arial\", \"Liberation Sans\"), size: 10pt)\n",
     "#set par(leading: 0.72em, spacing: 0.65em)\n",
@@ -51,10 +64,10 @@ pub struct VisualFlags {
 }
 
 pub(crate) fn with_document_font_defaults(source: &str) -> String {
-    if source.starts_with(DOCUMENT_MARKER) {
+    if is_generated_document(source) {
         source.to_string()
     } else {
-        let markdown = if source.starts_with(LEGACY_FONT_MARKER) {
+        let markdown = if has_pre_rename_font_marker(source) {
             source
                 .lines()
                 .skip(2)
@@ -376,7 +389,7 @@ fn escape_typst_text(text: &str) -> String {
 fn ensure_document_font_defaults(path: &Path) -> Result<(), String> {
     let source = std::fs::read_to_string(path)
         .map_err(|error| format!("Failed to read Typst source: {}", error))?;
-    if !source.starts_with(DOCUMENT_MARKER) {
+    if !is_generated_document(&source) {
         std::fs::write(path, with_document_font_defaults(&source))
             .map_err(|error| format!("Failed to set Typst document fonts: {}", error))?;
     }
@@ -739,12 +752,12 @@ mod tests {
 
     #[test]
     fn markdown_documents_use_typst_layout_and_segoe_ui_first() {
-        let source = "# CareerOS\n\nA **clear** and *polished* letter.\n\n- First item\n- Second item\n";
+        let source = "# Veridicus\n\nA **clear** and *polished* letter.\n\n- First item\n- Second item\n";
         let styled = with_document_font_defaults(source);
 
         assert!(styled.starts_with(DOCUMENT_MARKER));
         assert!(styled.contains("#set text(font: (\"Segoe UI\", \"Arial\", \"Liberation Sans\"), size: 10pt)"));
-        assert!(styled.contains("= CareerOS"));
+        assert!(styled.contains("= Veridicus"));
         assert!(styled.contains("*clear*"));
         assert!(styled.contains("_polished_"));
         assert!(styled.contains("- First item"));

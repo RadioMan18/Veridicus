@@ -1,12 +1,12 @@
-# CareerOS AI system card
+# Veridicus AI system card
 
-**System:** CareerOS Desktop, version 0.1.0
+**System:** Veridicus Desktop, version 0.1.0
 **Document status:** Phase 0–P2 compliance evidence. This is not a certification.
 **Last reviewed:** 2026-11-07
 
 ## Purpose
 
-CareerOS helps a job seeker tailor a resume and cover letter to a specific posting using only
+Veridicus helps a job seeker tailor a resume and cover letter to a specific posting using only
 facts the user has confirmed. It records what it generated and what the honesty gate decided.
 
 ## Intended use
@@ -70,8 +70,8 @@ facts the user has confirmed. It records what it generated and what the honesty 
 ## Data and retention
 
 - Claims, rules, gaps, and application records live in a SQLCipher-encrypted SQLite database.
-- Documents and audit records live under `Documents/CareerOS/applications/<id>/`.
-- Inference is local through Ollama; no document text is sent to a hosted model by CareerOS.
+- Documents and audit records live under `Documents/Veridicus/applications/<id>/`.
+- Inference is local through Ollama; no document text is sent to a hosted model by Veridicus.
 - Disclosure acknowledgements and 90-day honesty reviews live in `compliance/`.
 - The Git repository in the workspace keeps a versioned snapshot of approved materials.
 - Retention and deletion are controlled by the user; there is no automatic expiry.

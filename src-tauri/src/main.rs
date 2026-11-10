@@ -1,4 +1,4 @@
-//! CareerOS Desktop — Tauri v2 entry point.
+//! Veridicus Desktop — Tauri v2 entry point.
 //!
 //! Honesty guardrail verification engine with SQLCipher-encrypted Claims Ledger.
 
@@ -41,12 +41,15 @@ pub struct AppState {
 }
 
 pub fn main() {
+
+    // A workspace created before the rename moves onto the new names first.
+    workspace::migrate_legacy_workspace();
     let _single_instance_guard = match std::net::TcpListener::bind("127.0.0.1:42139") {
         Ok(listener) => listener,
         Err(_) => {
             rfd::MessageDialog::new()
-                .set_title("CareerOS")
-                .set_description("CareerOS is already running in the background. Please close the existing instance or check Task Manager.")
+                .set_title("Veridicus")
+                .set_description("Veridicus is already running in the background. Please close the existing instance or check Task Manager.")
                 .show();
             return;
         }

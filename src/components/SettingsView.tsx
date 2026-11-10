@@ -106,7 +106,7 @@ export default function SettingsView({
     setNotifyEnabled(false);
     writeNotifyEnabled(false);
     setNotifyHint(
-      'Windows would not grant notifications. Turn CareerOS on under Settings → System → Notifications.',
+      'Windows would not grant notifications. Turn Veridicus on under Settings → System → Notifications.',
     );
   };
 
@@ -327,7 +327,7 @@ export default function SettingsView({
       </section>
 
       <p className="text-xs text-aether-text-muted">
-        CareerOS never sends your resume, claims or applications to a remote service. Generation
+        Veridicus never sends your resume, claims or applications to a remote service. Generation
         runs against Ollama on this machine.
       </p>
     </div>

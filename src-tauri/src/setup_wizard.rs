@@ -77,7 +77,7 @@ pub fn get_setup_wizard_state(
     let steps = vec![
         SetupStep {
             id: "welcome".to_string(),
-            title: "Welcome to CareerOS".to_string(),
+            title: "Welcome to Veridicus".to_string(),
             description: "Set up your career management workspace".to_string(),
             completed: true,
             required: true,

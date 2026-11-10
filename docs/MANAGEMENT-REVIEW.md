@@ -10,7 +10,7 @@ scheduled by the Accountable Owner.
 
 ## 1. Purpose
 
-This procedure defines how top management reviews the CareerOS AI management system, its performance
+This procedure defines how top management reviews the Veridicus AI management system, its performance
 and its improvement needs. It supports ISO/IEC 42001 clause 9.3 and closes the loop from monitoring,
 internal audit and incidents to decisions and resources.
 

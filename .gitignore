@@ -32,7 +32,8 @@ src-tauri/icons/*.ico
 tmp/
 temp/
 
-# Local CareerOS workspace and generated skill templates
+# Local Veridicus workspace and generated skill templates
+.veridicus/
 .careeros/
 
 # Local editor/agent configuration

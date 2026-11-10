@@ -37,7 +37,7 @@ export default function ShortcutSheet({ isOpen, onClose }: { isOpen: boolean; on
       isOpen={isOpen}
       onClose={onClose}
       title="Keyboard shortcuts"
-      description="CareerOS is usable end to end without a mouse."
+      description="Veridicus is usable end to end without a mouse."
       size="md"
     >
       <div className="space-y-5">

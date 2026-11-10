@@ -133,7 +133,7 @@ export default function AppShell() {
         }
         const wizardState = await invoke<SetupWizardState>('get_setup_wizard_state');
         setSetupComplete(wizardState.completed);
-        if (!wizardState.completed && localStorage.getItem('careeros-setup-dismissed') !== 'true') {
+        if (!wizardState.completed && localStorage.getItem('veridicus-setup-dismissed') !== 'true') {
           setSetupOpen(true);
         }
         try {
@@ -267,7 +267,7 @@ export default function AppShell() {
   const closeSetupWizard = () => {
     setSetupOpen(false);
     if (!setupComplete) {
-      localStorage.setItem('careeros-setup-dismissed', 'true');
+      localStorage.setItem('veridicus-setup-dismissed', 'true');
     }
   };
 
@@ -291,7 +291,7 @@ export default function AppShell() {
     <div className="flex h-screen overflow-hidden bg-aether-bg text-aether-text">
       <aside className="flex w-60 shrink-0 flex-col border-r border-aether-border bg-aether-surface">
         <div className="px-5 py-5">
-          <p className="text-row font-bold leading-tight">CareerOS</p>
+          <p className="text-row font-bold leading-tight">Veridicus</p>
           <p className="text-meta text-aether-text-muted">Local job search OS</p>
         </div>
 

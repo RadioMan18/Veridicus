@@ -13,7 +13,7 @@
 **Adoption record:** [OPERATOR-ADOPTION-CHECKLIST.md](../OPERATOR-ADOPTION-CHECKLIST.md)
 **Scope and controls:** [STATEMENT-OF-APPLICABILITY.md](../STATEMENT-OF-APPLICABILITY.md)
 
-> This is an internal audit workpaper pack. Completing it does not certify CareerOS or establish
+> This is an internal audit workpaper pack. Completing it does not certify Veridicus or establish
 > ISO/IEC 42001 conformity. A conclusion is written only after the evidence is tested and the
 > sign-off in WP-06 is complete.
 
@@ -31,7 +31,7 @@ This pack turns the procedure in `INTERNAL-AUDIT.md` into an executable first au
 
 ## 2. Scope
 
-**In scope:** the AI management system for the local, single-user CareerOS Desktop application,
+**In scope:** the AI management system for the local, single-user Veridicus Desktop application,
 including policy, roles, impact assessment, selected Annex A controls, claims and provenance,
 guardrails, disclosure, audit records, incidents, monitoring, suppliers, change control and
 improvement.
