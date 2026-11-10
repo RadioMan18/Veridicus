@@ -1,0 +1,60 @@
+name: CI
+
+# Every push and every pull request runs the two checks that decide whether a
+# change is safe to merge: the TypeScript typecheck and the Rust test suite.
+# There is no lint or format gate in this repository yet, so neither job adds one.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: TypeScript typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - run: npx tsc --noEmit
+
+  rust-tests:
+    name: Rust tests
+    # The crate links Tauri with Windows-only dependencies (WebView2, winreg and
+    # the credential store), so the suite runs on the platform the app ships to.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # The default `custom-protocol` feature embeds `dist` into the binary, so
+      # the frontend has to exist before the crate will compile.
+      - run: npm ci
+
+      - run: npm run build
+
+      - name: cargo test --bins
+        working-directory: src-tauri
+        run: cargo test --bins --locked
