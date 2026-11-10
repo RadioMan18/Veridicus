@@ -1,8 +1,9 @@
 name: CI
 
-# Every push and every pull request runs the two checks that decide whether a
-# change is safe to merge: the TypeScript typecheck and the Rust test suite.
-# There is no lint or format gate in this repository yet, so neither job adds one.
+# Every push and every pull request runs the checks that decide whether a change
+# is safe to merge: the frontend (TypeScript typecheck plus the Vitest suite) and
+# the Rust test suite. There is no lint or format gate in this repository yet, so
+# neither job adds one.
 on:
   push:
   pull_request:
@@ -15,8 +16,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  typecheck:
-    name: TypeScript typecheck
+  frontend:
+    name: Frontend checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -29,6 +30,10 @@ jobs:
       - run: npm ci
 
       - run: npx tsc --noEmit
+
+      # The Vitest suites are colocated `src/**/*.test.ts` modules that run in a
+      # plain Node environment, so they need nothing from the desktop shell.
+      - run: npm test
 
   rust-tests:
     name: Rust tests

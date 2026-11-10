@@ -1,5 +1,7 @@
 # CareerOS
 
+[![CI](https://github.com/RadioMan18/careeros/actions/workflows/ci.yml/badge.svg)](https://github.com/RadioMan18/careeros/actions/workflows/ci.yml)
+
 Privacy-first job search OS with honesty guardrails. CareerOS is a Tauri 2 desktop application (Rust + React + TypeScript) that runs the whole application workflow — scrape a posting, tailor a resume and cover letter, compile PDFs, practice the interview, follow up — while only ever stating facts the candidate has verified.
 
 Every generated sentence is grounded in a **Claims Ledger** of confirmed facts; a model that invents, pads or contradicts the ledger is rejected and retried rather than shipped. All inference is local through Ollama, so resumes and job descriptions never leave the machine.
@@ -130,13 +132,26 @@ npm run tauri build
 ## Developing
 
 ```bash
-cd src-tauri && cargo test --bin careeros   # 155 unit tests
-npm test                                    # Vitest: pure frontend modules (3.2s, no DOM)
+npm test                                    # Vitest: pure frontend modules, no DOM
 npx tsc --noEmit                            # type check the frontend
+cd src-tauri && cargo test --bins           # 203 unit tests
 npm run build                               # rebuild dist/ for the bundled UI
 ```
 
 `npm test` runs the colocated `src/**/*.test.ts` suites with Vitest in a Node environment, so it covers policy and formatting modules such as the completion-chime rules rather than components. Anything that needs the Tauri bridge or a browser is not covered and is checked by hand in the running app.
+
+### Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and every pull request, as two parallel jobs:
+
+| Job | Runner | Steps |
+| --- | --- | --- |
+| Frontend checks | Ubuntu, Node 20 | `npm ci`, `npx tsc --noEmit`, `npm test` |
+| Rust tests | Windows | `npm ci`, `npm run build`, `cargo test --bins` |
+
+The Rust job runs on Windows because the crate links WebView2, `winreg` and the Windows credential store, and it builds the frontend first because the default `custom-protocol` feature embeds `dist/` into the binary. SQLCipher is compiled from source and links the system OpenSSL, and the Windows images ship OpenSSL without development headers, so the job installs the full SDK and points `OPENSSL_INCLUDE_DIR` and `OPENSSL_LIB_DIR` at it.
+
+To reproduce both jobs locally, run the commands in the table above in the same order. The only platform-specific part is the Rust job: it needs Windows and an OpenSSL install whose `include/` and `lib/` contain the development files.
 
 If the app looks unchanged after a frontend edit, the bundled `dist/` is stale — `npm run build` refreshes it, and `npm run tauri dev` serves Vite directly so it is not needed there.
 
