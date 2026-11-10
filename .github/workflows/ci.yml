@@ -55,6 +55,19 @@ jobs:
 
       - run: npm run build
 
+      # SQLCipher is built from source and links the system OpenSSL, but the
+      # Windows images ship OpenSSL "light", without its development headers.
+      - name: Install OpenSSL development headers
+        shell: pwsh
+        run: |
+          $root = "C:\Program Files\OpenSSL-Win64"
+          if (-not (Test-Path "$root\include\openssl\crypto.h")) {
+            choco install openssl --no-progress -y --force
+          }
+          if (-not (Test-Path "$root\include\openssl\crypto.h")) {
+            throw "OpenSSL headers are still missing under $root\include"
+          }
+
       # `Cargo.lock` is ignored by this repository, so the runner resolves the
       # dependency graph fresh rather than pinning it with `--locked`.
       - name: cargo test --bins
