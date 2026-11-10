@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import Markdown from './Markdown';
 
 /**
@@ -231,6 +232,9 @@ export function FeedbackCard({ feedback }: { feedback: MockFeedback }) {
 interface MockSessionPanelProps {
   session: MockSession;
   busy: boolean;
+  /** The candidate's answer for the question on screen. */
+  onAnswer: (text: string) => void;
+  onSkip: () => void;
   onEnd: () => void;
   onRetry: () => void;
   onRestart: () => void;
@@ -242,12 +246,29 @@ interface MockSessionPanelProps {
 export default function MockSessionPanel({
   session,
   busy,
+  onAnswer,
+  onSkip,
   onEnd,
   onRetry,
   onRestart,
   onDrill,
   onDone,
 }: MockSessionPanelProps) {
+  // The composer lives in the panel because the palette's input reads as a
+  // command box; answering from here needs no keyboard knowledge. The stage key
+  // clears the draft when the question or the follow-up changes.
+  const [draft, setDraft] = useState('');
+  const stage = `${session.transcript.length}:${session.active?.followUp ? 'follow-up' : 'question'}`;
+  useEffect(() => {
+    setDraft('');
+  }, [stage]);
+
+  const send = () => {
+    const text = draft.trim();
+    if (!text || busy) return;
+    onAnswer(text);
+  };
+
   const total = session.plan.questions.length;
   const answered = session.transcript.filter((turn) => !turn.skipped).length;
   const position = Math.min(session.transcript.length + 1, total);
@@ -389,6 +410,53 @@ export default function MockSessionPanel({
                 A strong answer includes: {current.evidence}
               </p>
             )}
+          </div>
+        )}
+
+        {session.status === 'asking' && (
+          <div className="rounded-lg border border-aether-border bg-aether-bg/60 p-2">
+            <label
+              htmlFor="mock-answer"
+              className="text-meta uppercase tracking-wide text-aether-text-muted"
+            >
+              {session.active?.followUp
+                ? 'Your answer to the follow-up'
+                : `Your answer${current ? ` to question ${current.index}` : ''}`}
+            </label>
+            <textarea
+              id="mock-answer"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey) {
+                  event.preventDefault();
+                  send();
+                }
+              }}
+              rows={3}
+              disabled={busy}
+              placeholder="Say it in your own words — a few sentences is enough."
+              className="mt-1 w-full resize-y rounded border border-aether-border bg-aether-surface p-2 text-body text-aether-text outline-none placeholder:text-aether-text-muted/70 focus:border-aether-primary disabled:opacity-60"
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button
+                onClick={send}
+                disabled={busy || draft.trim().length === 0}
+                className="rounded-lg bg-aether-primary px-3 py-1.5 text-body font-medium text-aether-primary-fg transition hover:bg-aether-primary-hover disabled:opacity-50"
+              >
+                Send answer
+              </button>
+              <button
+                onClick={onSkip}
+                disabled={busy}
+                className="rounded-lg border border-aether-border px-3 py-1.5 text-body text-aether-text transition hover:bg-aether-bg disabled:opacity-50"
+              >
+                Skip this question
+              </button>
+              <span className="text-meta text-aether-text-muted">
+                Enter sends · Shift+Enter starts a new line
+              </span>
+            </div>
           </div>
         )}
 

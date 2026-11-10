@@ -116,13 +116,20 @@ pub fn commit_application(
     }
 
     let claims = crate::guardrails::fetch_confirmed_claims(&conn)?;
+    let master_resume: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = 'master_resume'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
     let rules_resume = crate::guardrails::load_active_rules(&conn, crate::guardrails::RESUME)?;
     let rules_letter = crate::guardrails::load_active_rules(&conn, crate::guardrails::COVER_LETTER)?;
     let gaps = crate::guardrails::required_gaps_for(&conn, &application_id)?;
 
     let mut reports = Vec::new();
     if !resume_md.trim().is_empty() {
-        reports.push(crate::guardrails::evaluate_document(
+        reports.push(crate::guardrails::evaluate_document_with_base(
             crate::guardrails::RESUME,
             &resume_md,
             &claims,
@@ -130,10 +137,11 @@ pub fn commit_application(
             Some(employer.as_str()),
             Some(role.as_str()),
             &[],
+            master_resume.as_deref(),
         ));
     }
     if !letter_md.trim().is_empty() {
-        reports.push(crate::guardrails::evaluate_document(
+        reports.push(crate::guardrails::evaluate_document_with_base(
             crate::guardrails::COVER_LETTER,
             &letter_md,
             &claims,
@@ -141,6 +149,7 @@ pub fn commit_application(
             Some(employer.as_str()),
             Some(role.as_str()),
             &gaps,
+            master_resume.as_deref(),
         ));
     }
     let mut report = crate::guardrails::merge(reports);
@@ -698,9 +707,16 @@ pub async fn execute_apply_workflow(
         Ok(claims) => {
             let rules_resume = crate::guardrails::load_active_rules(&conn, crate::guardrails::RESUME).unwrap_or_default();
             let rules_letter = crate::guardrails::load_active_rules(&conn, crate::guardrails::COVER_LETTER).unwrap_or_default();
+            let master_resume: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM app_settings WHERE key = 'master_resume'",
+                    [],
+                    |row| row.get(0),
+                )
+                .ok();
             let mut reports = Vec::new();
             if let Some(resume) = result.resume_tailored.as_ref() {
-                reports.push(crate::guardrails::evaluate_document(
+                reports.push(crate::guardrails::evaluate_document_with_base(
                     crate::guardrails::RESUME,
                     &resume.markdown_output,
                     &claims,
@@ -708,10 +724,11 @@ pub async fn execute_apply_workflow(
                     Some(employer.as_str()),
                     Some(role.as_str()),
                     &[],
+                    master_resume.as_deref(),
                 ));
             }
             if let Some(letter) = result.cover_letter.as_ref() {
-                reports.push(crate::guardrails::evaluate_document(
+                reports.push(crate::guardrails::evaluate_document_with_base(
                     crate::guardrails::COVER_LETTER,
                     &letter.markdown_output,
                     &claims,
@@ -719,6 +736,7 @@ pub async fn execute_apply_workflow(
                     Some(employer.as_str()),
                     Some(role.as_str()),
                     &required_gaps,
+                    master_resume.as_deref(),
                 ));
             }
             // Advisory model pass: looks for scope inflation the lexicon misses.

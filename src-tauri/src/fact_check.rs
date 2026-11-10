@@ -476,12 +476,24 @@ pub fn get_fact_check_summary(report: FactCheckReport) -> String {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct MetricVerification {
     pub unverified: Vec<String>,
+    /// Metrics the master resume states but the ledger has not confirmed. They
+    /// are reported as advisories: the user's own resume is not an invention.
+    pub from_base_resume: Vec<String>,
     pub qualifier_violations: Vec<String>,
     pub found: usize,
     pub verified: usize,
 }
 
 pub(crate) fn verify_metrics(draft: &str, claims: &[Claim]) -> MetricVerification {
+    verify_metrics_with_base(draft, claims, None)
+}
+
+pub(crate) fn verify_metrics_with_base(
+    draft: &str,
+    claims: &[Claim],
+    base_resume: Option<&str>,
+) -> MetricVerification {
+    let base_lower = base_resume.unwrap_or("").to_lowercase();
     let claim_metrics: Vec<((f64, String), Option<String>)> = claims
         .iter()
         .flat_map(|claim| {
@@ -508,7 +520,11 @@ pub(crate) fn verify_metrics(draft: &str, claims: &[Claim]) -> MetricVerificatio
             .collect();
 
         if matches.is_empty() {
-            verification.unverified.push(metric.raw);
+            if !base_lower.is_empty() && metric_appears_in(&metric.raw, &base_lower) {
+                verification.from_base_resume.push(metric.raw);
+            } else {
+                verification.unverified.push(metric.raw);
+            }
             continue;
         }
 
@@ -542,9 +558,45 @@ pub(crate) fn verify_metrics(draft: &str, claims: &[Claim]) -> MetricVerificatio
     verification
 }
 
+/// True when the metric's wording, or its number and unit, already appears in the
+/// master resume.
+fn metric_appears_in(raw: &str, base_lower: &str) -> bool {
+    let needle = raw
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    if needle.is_empty() {
+        return false;
+    }
+    if base_lower.contains(&needle) {
+        return true;
+    }
+    let Some((value, unit)) = metric_key(raw) else {
+        return false;
+    };
+    let number = if value.fract().abs() < f64::EPSILON {
+        format!("{}", value as i64)
+    } else {
+        format!("{}", value)
+    };
+    let number_present = base_lower
+        .split(|character: char| !character.is_ascii_digit())
+        .any(|digits| digits == number);
+    if !number_present {
+        return false;
+    }
+    // A metric with no unit to check, or a very short one, is matched on its
+    // number alone; the master resume already contains that number.
+    let Some(unit_root) = unit.split_whitespace().next() else {
+        return true;
+    };
+    unit_root.len() < 3 || base_lower.contains(unit_root)
+}
+
 #[cfg(test)]
 mod metric_tests {
-    use super::{employer_consistency_warnings, verify_metrics, Claim};
+    use super::{employer_consistency_warnings, verify_metrics, verify_metrics_with_base, Claim};
 
     fn claim(wording: &str) -> Claim {
         Claim {
@@ -596,6 +648,19 @@ mod metric_tests {
         );
         assert!(report.unverified.is_empty(), "unverified: {:?}", report.unverified);
         assert!(report.qualifier_violations.is_empty(), "{:?}", report.qualifier_violations);
+    }
+
+    #[test]
+    fn a_metric_the_master_resume_states_is_advisory_not_blocking() {
+        let base = "Cut asset search time from 30 minutes to under 5 minutes. Served 500+ clients over 9 years.";
+        let report = verify_metrics_with_base(
+            "search time is under 5 minutes, 9 Years in enablement, 500 clients served",
+            &[],
+            Some(base),
+        );
+
+        assert!(report.unverified.is_empty(), "unverified: {:?}", report.unverified);
+        assert_eq!(report.from_base_resume.len(), 3, "{:?}", report.from_base_resume);
     }
 
     #[test]

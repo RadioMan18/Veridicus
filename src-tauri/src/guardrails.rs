@@ -570,8 +570,77 @@ fn salutation_names_other_company(salutation: &str, employer: &str) -> bool {
     true
 }
 
-fn ungrounded_resume_bullets(draft: &str, claims: &[Claim]) -> Vec<String> {
-    let mut findings = Vec::new();
+/// The longest words of a line, which carry its substance: "supported the team"
+/// is not evidence of anything on its own.
+fn distinctive_words(text: &str) -> Vec<String> {
+    normalize(text)
+        .split_whitespace()
+        .filter(|word| word.len() >= 4 && !STOP_WORDS.contains(word))
+        .map(|word| word.to_string())
+        .collect()
+}
+
+fn numbers_in(text: &str) -> Vec<String> {
+    normalize(text)
+        .split_whitespace()
+        .filter(|word| word.chars().any(|character| character.is_ascii_digit()))
+        .map(|word| word.to_string())
+        .collect()
+}
+
+/// True when the line already exists in the user's master resume. The master
+/// resume is the user's own document, so a line traced to it is not an invention;
+/// it is a fact the ledger has not confirmed yet, which is an advisory, not a
+/// block.
+fn base_resume_supports(text: &str, base_normalized: &str) -> bool {
+    if base_normalized.is_empty() {
+        return false;
+    }
+    let normalized = normalize(text);
+    if normalized.is_empty() {
+        return false;
+    }
+    // A run of five words copied from the master resume is its own evidence; a
+    // tailored bullet that only reorders a clause is caught by the word overlap
+    // below.
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    if words.len() >= 5
+        && words
+            .windows(5)
+            .any(|window| base_normalized.contains(&window.join(" ")))
+    {
+        return true;
+    }
+    let distinctive = distinctive_words(text);
+    if distinctive.len() < 4 {
+        return false;
+    }
+    let matched = distinctive
+        .iter()
+        .filter(|word| contains_word(base_normalized, word))
+        .count();
+    if (matched as f32) / (distinctive.len() as f32) < 0.7 {
+        return false;
+    }
+    // A number the master resume does not contain is still an invention.
+    numbers_in(text)
+        .iter()
+        .all(|number| contains_word(base_normalized, number))
+}
+
+#[derive(Default)]
+struct BulletCheck {
+    blocking: Vec<String>,
+    from_base_resume: Vec<String>,
+}
+
+fn ungrounded_resume_bullets(
+    draft: &str,
+    claims: &[Claim],
+    base_resume: Option<&str>,
+) -> BulletCheck {
+    let mut findings = BulletCheck::default();
+    let base_normalized = normalize(base_resume.unwrap_or(""));
     let mut section = String::new();
 
     for line in draft.lines() {
@@ -607,8 +676,15 @@ fn ungrounded_resume_bullets(draft: &str, claims: &[Claim]) -> Vec<String> {
         if is_theme_heading(statement) {
             continue;
         }
-        if !is_grounded(statement, claims) {
-            findings.push(format!(
+        if is_grounded(statement, claims) {
+            continue;
+        }
+        let traced = base_resume_supports(statement, &base_normalized)
+            || base_resume_supports(bullet, &base_normalized);
+        if traced {
+            findings.from_base_resume.push(bullet.to_string());
+        } else {
+            findings.blocking.push(format!(
                 "resume bullet is not supported by a confirmed claim: '{}'",
                 bullet
             ));
@@ -672,6 +748,31 @@ pub fn evaluate_document(
     role: Option<&str>,
     required_gaps: &[RequiredGap],
 ) -> GuardrailReport {
+    evaluate_document_with_base(
+        kind,
+        draft,
+        claims,
+        rules,
+        employer,
+        role,
+        required_gaps,
+        None,
+    )
+}
+
+/// Evaluate a document that also knows the master resume it was tailored from.
+/// A line the master resume already states is reported as an advisory rather than
+/// a block, because the user's own resume is not a hallucination.
+pub fn evaluate_document_with_base(
+    kind: &str,
+    draft: &str,
+    claims: &[Claim],
+    rules: &[RuleView],
+    employer: Option<&str>,
+    role: Option<&str>,
+    required_gaps: &[RequiredGap],
+    base_resume: Option<&str>,
+) -> GuardrailReport {
     let mut report = GuardrailReport::default();
     let draft_lower = draft.to_lowercase();
 
@@ -727,7 +828,7 @@ pub fn evaluate_document(
         }
     }
 
-    let metrics = fact_check::verify_metrics(draft, claims);
+    let metrics = fact_check::verify_metrics_with_base(draft, claims, base_resume);
     report.checks_run += metrics.found.max(1);
     for metric in &metrics.unverified {
         push(
@@ -735,6 +836,17 @@ pub fn evaluate_document(
             "unverified_metric",
             format!("'{}' is not supported by any confirmed claim", metric),
             true,
+        );
+    }
+    if !metrics.from_base_resume.is_empty() {
+        push(
+            &mut report,
+            "metric_from_base_resume",
+            format!(
+                "'{}' appears in your master resume but not in a confirmed claim; confirm the claim to make it verifiable",
+                metrics.from_base_resume.join("', '")
+            ),
+            false,
         );
     }
     for violation in &metrics.qualifier_violations {
@@ -801,12 +913,54 @@ pub fn evaluate_document(
                 );
             }
         }
+
+        // A letter may ship while naming no measured outcome: the generation gate
+        // retries once and then keeps an honest draft rather than stopping the
+        // apply, so the weakness is reported here instead of passing silently.
+        let base_normalized = normalize(base_resume.unwrap_or(""));
+        let cites_evidence = draft
+            .split(|character| matches!(character, '.' | '!' | '?' | '\n'))
+            .map(str::trim)
+            .filter(|sentence| sentence.len() >= 20)
+            .any(|sentence| {
+                is_grounded(sentence, claims) || base_resume_supports(sentence, &base_normalized)
+            });
+        report.checks_run += 1;
+        if !cites_evidence {
+            push(
+                &mut report,
+                "letter_evidence",
+                "the letter names no specific confirmed outcome; add one of the ledger's measured claims".to_string(),
+                false,
+            );
+        }
     }
 
     if kind == RESUME {
-        for message in ungrounded_resume_bullets(draft, claims) {
+        let bullets = ungrounded_resume_bullets(draft, claims, base_resume);
+        for message in bullets.blocking {
             report.checks_run += 1;
             push(&mut report, "ungrounded_bullet", message, true);
+        }
+        if !bullets.from_base_resume.is_empty() {
+            let total = bullets.from_base_resume.len();
+            let sample = bullets
+                .from_base_resume
+                .iter()
+                .take(2)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("', '");
+            report.checks_run += 1;
+            push(
+                &mut report,
+                "bullet_from_base_resume",
+                format!(
+                    "{} resume bullet(s) come from your master resume but have no confirmed claim (for example '{}'); confirm them in the ledger to clear this",
+                    total, sample
+                ),
+                false,
+            );
         }
     }
 
@@ -1192,8 +1346,8 @@ mod gap_decision_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        evaluate_document, gap_named, is_grounded, merge, RequiredGap, RuleView, COVER_LETTER,
-        RESUME,
+        evaluate_document, evaluate_document_with_base, gap_named, is_grounded, merge, RequiredGap,
+        RuleView, COVER_LETTER, RESUME,
     };
     use crate::claims::Claim;
 
@@ -1598,6 +1752,99 @@ mod tests {
     }
 
     #[test]
+    fn master_resume_bullets_are_advisory_not_blocking() {
+        let base = "## Experience\n- SharePoint Search Redesign: Reorganized the ILT Courseware SharePoint structure, cutting asset search time from 30 minutes to under 5 minutes.\n- HL7 Integration Validation: Validated HL7 v2.3 / MLLP ADT^A01 message integration.\n- Enterprise EHR Implementation: Supported 50+ enterprise go-lives across the U.S. for Altera TouchWorks EHR. Led end-user readiness, training workflow design, and post-go-live optimization.\n";
+        let draft = "## Experience\n- SharePoint Search Redesign: Reorganized the ILT Courseware SharePoint structure, cutting asset search time from 30 minutes to under 5 minutes.\n- HL7 Integration Validation: Validated HL7 v2.3 / MLLP ADT^A01 message integration.\n- Enterprise EHR Implementation: Supported 50+ enterprise go-lives across the U.S. for Altera TouchWorks EHR. Led end-user readiness, training workflow design, and post-go-live optimization.\n";
+        let report = evaluate_document_with_base(
+            RESUME,
+            draft,
+            &[claim("Led the training program")],
+            &[],
+            None,
+            None,
+            &[],
+            Some(base),
+        );
+
+        assert!(!report.blocking, "findings: {:?}", report.findings);
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ungrounded_bullet"),
+            "findings: {:?}",
+            report.findings
+        );
+        assert!(
+            report.findings.iter().any(|finding| finding.code
+                == "bullet_from_base_resume"
+                && !finding.blocking),
+            "findings: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn the_reported_master_resume_bullets_do_not_block() {
+        let bullets = [
+            "Clinical & Financial Simulation Engines: Built SIM-CORE and FIN-CORE, which generate synthetic patient records and billing scenarios for clinician training.",
+            "Hallucination & Logic-Loop Reduction: Built KG View, a knowledge-graph visualizer, and an agentic optimization framework to curb logic loops and AI hallucinations in production workflows.",
+            "AI Adoption & Internal Communication: Presented emerging AI technologies at AI Pathfinders, a weekly cross-functional group across Sunrise Development, to 115–132 attendees per session.",
+            "SharePoint Search Redesign: Reorganized the ILT Courseware SharePoint structure, cutting asset search time from 30 minutes to under 5 minutes.",
+            "Sunrise EHR Documentation: Maintained Sunrise EHR documentation for versions 21.1 through 25.1.",
+            "HL7 Integration Validation: Validated HL7 v2.3 / MLLP ADT^A01 message integration.",
+            "Curriculum & Courseware Development: Designed, built, and maintained training materials, including manuals, interactive job aids, and quick reference guides, for Altera Sunrise EHR across Acute Care, Ambulatory, Surgical, Financial Manager, and Medical Logic Modules.",
+            "Instructor-Led Technical Facilitation: Taught instructor-led (ILT) and virtual instructor-led (VILT) sessions for clinical and administrative staff through major Sunrise upgrade cycles, v17.0 through v21.1.",
+            "Enterprise EHR Implementation: Supported 50+ enterprise go-lives across the U.S. for Altera TouchWorks EHR. Led end-user readiness, training workflow design, and post-go-live optimization.",
+            "Gamified eLearning Solutions: Designed interactive eLearning modules, scenario-based simulation training, and gamified learning for Fortune 500 clients, including USAA and Marathon Oil.",
+            "Cross-country leadership in AI adoption and change management",
+            "Experience with training and education programs",
+        ];
+        let base = format!("## Experience\n- {}\n", bullets.join("\n- "));
+        let draft = format!("## Experience\n- {}\n", bullets.join("\n- "));
+        let report = evaluate_document_with_base(
+            RESUME,
+            &draft,
+            &[],
+            &[],
+            None,
+            None,
+            &[],
+            Some(&base),
+        );
+
+        let blocking: Vec<_> = report
+            .findings
+            .iter()
+            .filter(|finding| finding.blocking)
+            .collect();
+        assert!(blocking.is_empty(), "blocking: {:?}", blocking);
+    }
+
+    #[test]
+    fn a_bullet_the_master_resume_does_not_state_still_blocks() {
+        let report = evaluate_document_with_base(
+            RESUME,
+            "## Experience\n- Invented a company-wide platform nobody confirmed\n",
+            &[claim("Led the training program")],
+            &[],
+            None,
+            None,
+            &[],
+            Some("- Reorganized the ILT Courseware SharePoint structure.\n"),
+        );
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.code == "ungrounded_bullet" && finding.blocking),
+            "findings: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
     fn a_skills_list_is_not_checked_as_experience() {
         let draft = "## Skills\n- AI & Process Automation\n- Cross-Functional Collaboration\n";
         let report = evaluate_document(
@@ -1635,8 +1882,8 @@ mod tests {
     fn reports_merge_without_losing_blocking_state() {
         let clean = evaluate_document(
             COVER_LETTER,
-            "Acme needs an Engineer. I delivered work.",
-            &[claim("Delivered work")],
+            "Acme needs an Engineer. I delivered platform work across twelve teams.",
+            &[claim("Delivered platform work across twelve teams")],
             &[],
             Some("Acme"),
             Some("Engineer"),
@@ -1654,7 +1901,15 @@ mod tests {
 
         let merged = merge(vec![clean, blocked]);
         assert!(merged.blocking);
-        assert_eq!(merged.findings.len(), 1);
+        // The vague second letter also earns the advisory for naming no outcome.
+        assert_eq!(
+            merged
+                .findings
+                .iter()
+                .filter(|finding| finding.blocking)
+                .count(),
+            1
+        );
     }
 
     #[test]

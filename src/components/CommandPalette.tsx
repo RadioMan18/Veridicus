@@ -1172,6 +1172,12 @@ export default function CommandPalette({
             <MockSessionPanel
               session={mockSession}
               busy={mockBusy}
+              onAnswer={(text) => {
+                void answerMock(text);
+              }}
+              onSkip={() => {
+                void skipMock();
+              }}
               onEnd={() => {
                 void endMock();
               }}

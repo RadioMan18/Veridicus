@@ -882,8 +882,12 @@ fn cliche_in(output: &str) -> Option<&'static str> {
 
 /// A cover letter is rejected for generic filler only when it also fails to
 /// cite confirmed evidence; a grounded letter may use one of those phrases.
-fn cover_letter_problem(output: &str, claims: &[Claim]) -> Option<String> {
-    let grounding = letter_grounding_problem(output, claims)?;
+fn cover_letter_problem(
+    output: &str,
+    claims: &[Claim],
+    base_resume: Option<&str>,
+) -> Option<String> {
+    let grounding = letter_grounding_problem(output, claims, base_resume)?;
     match cliche_in(output) {
         Some(cliche) => Some(format!(
             "the letter relies on generic filler (\"{}\") instead of specific evidence",
@@ -896,13 +900,30 @@ fn cover_letter_problem(output: &str, claims: &[Claim]) -> Option<String> {
 /// Detect a letter that talks about the candidate in generalities instead of citing the ledger.
 /// Paraphrasing is fine: a four-word verbatim window, or most of a claim's distinctive
 /// wording with one of its numbers, is enough to count as evidence.
-fn letter_grounding_problem(output: &str, claims: &[Claim]) -> Option<String> {
+///
+/// A fact the master resume states is the user's own, not an invention, so it
+/// counts as evidence too; the guardrail reports the missing claim separately.
+fn letter_grounding_problem(
+    output: &str,
+    claims: &[Claim],
+    base_resume: Option<&str>,
+) -> Option<String> {
     let output_words = letter_words(output);
     if claims
         .iter()
         .any(|claim| claim_is_cited(&claim.confirmed_wording, output, &output_words))
     {
         return None;
+    }
+    if let Some(base) = base_resume {
+        if base
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.len() >= 20)
+            .any(|line| claim_is_cited(line, output, &output_words))
+        {
+            return None;
+        }
     }
 
     Some("the letter does not cite specific confirmed evidence".to_string())
@@ -1010,21 +1031,38 @@ fn claim_is_cited(claim: &str, output: &str, output_words: &[String]) -> bool {
 
 /// A letter that cites no evidence is a style defect, not dishonesty: keep
 /// whichever draft does cite it and was not cut off, instead of stopping the
-/// apply. `None` means neither draft can ship.
+/// apply. When neither draft names evidence, a complete, honest, cliche-free
+/// letter still ships and the guardrail reports the weakness. `None` means
+/// neither draft can ship.
 fn letter_draft_to_keep(
     first_output: &str,
     first_truncated: bool,
     retried_output: &str,
     retried_truncated: bool,
     claims: &[Claim],
+    base_resume: Option<&str>,
 ) -> Option<String> {
-    if !retried_truncated && cover_letter_problem(retried_output, claims).is_none() {
+    if !retried_truncated && cover_letter_problem(retried_output, claims, base_resume).is_none() {
         return Some(retried_output.to_string());
     }
     let first_shippable = !first_truncated
         && honesty_problem_with("cover-letter", first_output, false).is_none()
-        && cover_letter_problem(first_output, claims).is_none();
+        && cover_letter_problem(first_output, claims, base_resume).is_none();
     if first_shippable {
+        return Some(first_output.to_string());
+    }
+    // Missing evidence is the recoverable defect; generic filler and a truncated
+    // reply are not, so those still stop at the retry limit.
+    if !retried_truncated
+        && honesty_problem_with("cover-letter", retried_output, false).is_none()
+        && cliche_in(retried_output).is_none()
+    {
+        return Some(retried_output.to_string());
+    }
+    if !first_truncated
+        && honesty_problem_with("cover-letter", first_output, false).is_none()
+        && cliche_in(first_output).is_none()
+    {
         return Some(first_output.to_string());
     }
     None
@@ -1712,7 +1750,7 @@ pub async fn execute_skill(
     } else {
         generated_document_problem(&input.skill_id, &first_output).or_else(|| {
             if input.skill_id == "cover-letter" {
-                cover_letter_problem(&first_output, &claims)
+                cover_letter_problem(&first_output, &claims, master_resume.as_deref())
             } else if input.skill_id == "resume-tailor" {
                 master_resume
                     .as_deref()
@@ -1760,7 +1798,7 @@ pub async fn execute_skill(
             ));
         }
         let retried_letter_problem = if input.skill_id == "cover-letter" {
-            cover_letter_problem(&retried_output, &claims)
+            cover_letter_problem(&retried_output, &claims, master_resume.as_deref())
         } else {
             None
         };
@@ -1801,6 +1839,7 @@ pub async fn execute_skill(
                 &retried_output,
                 retried_truncated,
                 &claims,
+                master_resume.as_deref(),
             ) {
                 Some(draft) => {
                     if draft == retried_output {
@@ -2306,7 +2345,8 @@ mod grounding_tests {
         let letter = "Dear Hiring Manager,\n\nI am interested in this role. My background in learning and development aligns well with your needs, and I would be a strong addition to the team.\n\nSincerely,\nJane";
         assert!(letter_grounding_problem(
             letter,
-            &[claim("Reduced planning time from eight hours to thirty minutes")]
+            &[claim("Reduced planning time from eight hours to thirty minutes")],
+            None
         )
         .is_some());
     }
@@ -2317,7 +2357,8 @@ mod grounding_tests {
         assert_eq!(
             letter_grounding_problem(
                 letter,
-                &[claim("Reduced planning time from eight hours to thirty minutes")]
+                &[claim("Reduced planning time from eight hours to thirty minutes")],
+                None
             ),
             None
         );
@@ -2329,7 +2370,7 @@ mod grounding_tests {
         let claims = [claim(
             "Reduced planning time from eight hours to thirty minutes",
         )];
-        let problem = cover_letter_problem(letter, &claims).expect("rejected");
+        let problem = cover_letter_problem(letter, &claims, None).expect("rejected");
         assert!(problem.contains("generic filler"), "{problem}");
         assert!(problem.contains("i am excited to apply"), "{problem}");
     }
@@ -2338,15 +2379,15 @@ mod grounding_tests {
     fn a_paraphrased_claim_that_keeps_its_number_is_evidence() {
         let claims = [claim("Reduced planning time from eight hours to thirty minutes")];
         let letter = "Dear Hiring Team,\n\nAt Altera I cut planning time from 8 hours to 30 minutes for every specification the team shipped.\n\nSincerely,\nJane";
-        assert_eq!(letter_grounding_problem(letter, &claims), None);
-        assert_eq!(cover_letter_problem(letter, &claims), None);
+        assert_eq!(letter_grounding_problem(letter, &claims, None), None);
+        assert_eq!(cover_letter_problem(letter, &claims, None), None);
     }
 
     #[test]
     fn a_paraphrase_that_drops_the_number_is_not_evidence() {
         let claims = [claim("Reduced planning time from eight hours to thirty minutes")];
         let letter = "Dear Hiring Team,\n\nI made specification planning much faster for the team.\n\nSincerely,\nJane";
-        assert!(letter_grounding_problem(letter, &claims).is_some());
+        assert!(letter_grounding_problem(letter, &claims, None).is_some());
     }
 
     #[test]
@@ -2355,7 +2396,7 @@ mod grounding_tests {
         let first = "Dear Hiring Team,\n\nAt Altera I cut planning time from 8 hours to 30 minutes for every specification the team shipped, work that let six tools reach production in one quarter. I kept the same measurement discipline across the later migration, tracking each release against that baseline and reporting the result to the people who depended on it every week.\n\nSincerely,\nJane";
         let retry = "Dear Hiring Team,\n\nI am excited to apply for this role and leverage my background in learning and development across a range of teams and programs.\n\nSincerely,\nJane";
         assert_eq!(
-            letter_draft_to_keep(first, false, retry, false, &claims),
+            letter_draft_to_keep(first, false, retry, false, &claims, None),
             Some(first.to_string())
         );
     }
@@ -2365,7 +2406,7 @@ mod grounding_tests {
         let claims = [claim("Reduced planning time from eight hours to thirty minutes")];
         let generic = "Dear Hiring Team,\n\nI am excited to apply for this role and leverage my background in learning and development across a range of teams and programs.\n\nSincerely,\nJane";
         assert_eq!(
-            letter_draft_to_keep(generic, false, generic, false, &claims),
+            letter_draft_to_keep(generic, false, generic, false, &claims, None),
             None
         );
     }
@@ -2376,7 +2417,29 @@ mod grounding_tests {
         let claims = [claim(
             "Reduced planning time from eight hours to thirty minutes",
         )];
-        assert_eq!(cover_letter_problem(letter, &claims), None);
+        assert_eq!(cover_letter_problem(letter, &claims, None), None);
+    }
+
+    #[test]
+    fn a_fact_from_the_master_resume_counts_as_evidence() {
+        let claims = [claim("Led the onboarding program")];
+        let base = "## Experience\n- Reorganized the ILT Courseware SharePoint structure, cutting asset search time from 30 minutes to under 5 minutes.\n";
+        let letter = "Dear Hiring Team,\n\nI cut asset search time from 30 minutes to under 5 minutes by reorganizing the ILT Courseware SharePoint structure for a national training team.\n\nSincerely,\nJane";
+        assert!(letter_grounding_problem(letter, &claims, None).is_some());
+        assert_eq!(letter_grounding_problem(letter, &claims, Some(base)), None);
+    }
+
+    #[test]
+    fn a_letter_without_evidence_but_without_filler_still_ships() {
+        let claims = [claim(
+            "Reduced planning time from eight hours to thirty minutes",
+        )];
+        let draft = "Dear Hiring Team,\n\nMy work restructuring specification planning made the process faster for every tool the team shipped, and I carried that measurement discipline into each later release. I mapped the steps, kept the baseline, and reported the result to the people who depended on it, which is the habit I would bring to this role.\n\nSincerely,\nJane";
+        assert!(letter_grounding_problem(draft, &claims, None).is_some());
+        assert_eq!(
+            letter_draft_to_keep(draft, false, draft, false, &claims, None),
+            Some(draft.to_string())
+        );
     }
 }
 
