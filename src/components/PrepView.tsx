@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import Markdown from './Markdown';
 import { withCompletionChime } from '../lib/completionSound';
+import { MockHistoryStrip, type MockSessionRecord } from './MockInterview';
 
 interface InterviewQuestion {
   question: string;
@@ -59,6 +60,7 @@ export default function PrepView({ onOpenFit }: { onOpenFit?: () => void }) {
   const [prep, setPrep] = useState<InterviewPrep | null>(null);
   const [prepError, setPrepError] = useState<string | null>(null);
   const [prepLoading, setPrepLoading] = useState(false);
+  const [mockSessions, setMockSessions] = useState<MockSessionRecord[]>([]);
 
   useEffect(() => {
     invoke<ApplicationRecord[]>('get_application_records')
@@ -85,6 +87,26 @@ export default function PrepView({ onOpenFit }: { onOpenFit?: () => void }) {
       })
       .catch(() => {
         if (active) setPrep(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [appId]);
+
+  // The runs practising for this application, so the prep view shows what was
+  // already asked and what the weakest dimension was.
+  useEffect(() => {
+    if (!appId) {
+      setMockSessions([]);
+      return;
+    }
+    let active = true;
+    invoke<MockSessionRecord[]>('recent_mock_sessions', { applicationId: appId })
+      .then((rows) => {
+        if (active) setMockSessions(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (active) setMockSessions([]);
       });
     return () => {
       active = false;
@@ -235,6 +257,8 @@ export default function PrepView({ onOpenFit }: { onOpenFit?: () => void }) {
               {prepLoading ? 'Preparing…' : prep ? 'Regenerate' : 'Generate prep'}
             </button>
           </div>
+
+          <MockHistoryStrip sessions={mockSessions} title="Mock interviews for this role" />
 
           {prepError && <p className="text-body text-aether-error">{prepError}</p>}
 

@@ -746,7 +746,7 @@ fn load_application(
     .map_err(|error| format!("Failed to load application {}: {}", application_id, error))
 }
 
-fn application_dir(application_id: &str) -> Result<std::path::PathBuf, String> {
+pub(crate) fn application_dir(application_id: &str) -> Result<std::path::PathBuf, String> {
     let docs = dirs::document_dir().ok_or("Failed to locate Documents folder")?;
     Ok(docs
         .join("CareerOS")

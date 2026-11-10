@@ -144,6 +144,12 @@ pub struct MockPlan {
     pub mode: String,
     /// One of `supportive`, `professional`, `skeptical`, `impatient`.
     pub persona: String,
+    /// The question group the run leans on; `None` means all groups.
+    #[serde(default)]
+    pub focus: Option<String>,
+    /// The application this run is practising for, when one matched its role.
+    #[serde(default)]
+    pub application_id: Option<String>,
     pub questions: Vec<MockQuestion>,
     /// How many confirmed claims the questions can draw on.
     pub grounded_in: usize,
@@ -173,6 +179,13 @@ pub struct AnswerMetrics {
     pub has_metric: bool,
     pub first_person_i: usize,
     pub first_person_we: usize,
+    /// Wall-clock seconds the session spent on the question, when it reported them.
+    #[serde(default)]
+    pub elapsed_seconds: Option<u64>,
+    /// `short`, `on-target`, `over` or `long` against the soft target; `None`
+    /// when the clock was not reported.
+    #[serde(default)]
+    pub pacing: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +215,25 @@ pub struct MockEvaluation {
     /// `None` while a follow-up is pending, and always `None` in simulation.
     pub feedback: Option<MockFeedback>,
     pub model_note: Option<String>,
+}
+
+/// One finished run, kept so a later session has context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MockSessionRecord {
+    /// The application the run was practising for, when one matched its role.
+    #[serde(default)]
+    pub application_id: Option<String>,
+    /// `YYYY-MM-DD HH:MM`, local time.
+    pub date: String,
+    pub role: String,
+    pub mode: String,
+    pub persona: String,
+    pub answered: usize,
+    pub asked: usize,
+    pub average: u8,
+    /// The lowest-scoring dimension of the run; empty when nothing was scored.
+    pub weakest: String,
 }
 
 /// One completed question, as the palette sends it back for the debrief.
@@ -311,16 +343,224 @@ fn clamp_count(raw: Option<usize>) -> usize {
     raw.unwrap_or(DEFAULT_QUESTIONS).clamp(MIN_QUESTIONS, MAX_QUESTIONS)
 }
 
+/// The group a run should lean on, or `None` for all groups.
+fn normalize_focus(raw: Option<&str>) -> Option<&'static str> {
+    match raw.unwrap_or_default().trim().to_lowercase().as_str() {
+        "technical" | "tech" => Some("technical"),
+        "behavioral" | "behavioural" | "behavior" | "behaviour" | "star" => Some("behavioral"),
+        "culture-fit" | "culture fit" | "culture" | "values" | "fit" => Some("culture-fit"),
+        _ => None,
+    }
+}
+
+/// The question texts the last run asked, so the next run opens with fresh ones.
+/// A missing or unreadable log simply means "nothing asked yet".
+const ROTATION_FILE: &str = "mock-rotation.json";
+
+fn rotation_path() -> Option<std::path::PathBuf> {
+    dirs::document_dir().map(|docs| docs.join("CareerOS").join(ROTATION_FILE))
+}
+
+fn recent_questions() -> Vec<String> {
+    let Some(path) = rotation_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Best effort: a rotation log that cannot be written must not stop a session.
+fn remember_questions(questions: &[MockQuestion]) {
+    let Some(path) = rotation_path() else {
+        return;
+    };
+    let asked: Vec<&str> = questions
+        .iter()
+        .map(|question| question.text.as_str())
+        .collect();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&asked) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// Finished runs, newest last, beside the workspace's other state files.
+const SESSIONS_FILE: &str = "mock-sessions.json";
+const SESSIONS_KEPT: usize = 50;
+
+fn sessions_path() -> Option<std::path::PathBuf> {
+    dirs::document_dir().map(|docs| docs.join("CareerOS").join(SESSIONS_FILE))
+}
+
+fn read_sessions() -> Vec<MockSessionRecord> {
+    let Some(path) = sessions_path() else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Best effort: history is context, never a reason to fail a debrief.
+fn remember_session(record: MockSessionRecord) {
+    let Some(path) = sessions_path() else {
+        return;
+    };
+    let mut sessions = read_sessions();
+    sessions.push(record);
+    let drop = sessions.len().saturating_sub(SESSIONS_KEPT);
+    let sessions: Vec<MockSessionRecord> = sessions.into_iter().skip(drop).collect();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&sessions) {
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// What one run left behind, as the history strip reads it.
+fn session_record(
+    role: &str,
+    mode: &str,
+    persona: &str,
+    application_id: Option<&str>,
+    asked: usize,
+    scored: &[(usize, MockFeedback)],
+    date: &str,
+) -> MockSessionRecord {
+    let answered = scored.len();
+    let average = if answered == 0 {
+        0
+    } else {
+        scored
+            .iter()
+            .map(|(_, feedback)| feedback.overall as usize)
+            .sum::<usize>()
+            / answered
+    };
+    MockSessionRecord {
+        application_id: application_id.map(str::to_string),
+        date: date.to_string(),
+        role: role.to_string(),
+        mode: mode.to_string(),
+        persona: persona.to_string(),
+        answered,
+        asked,
+        average: average.min(100) as u8,
+        weakest: dimension_totals(scored).1,
+    }
+}
+
+/// The last five finished runs, newest first. An application id keeps only the
+/// runs that were practising for it, which is what the prep view asks for.
+#[tauri::command]
+pub fn recent_mock_sessions(application_id: Option<String>) -> Vec<MockSessionRecord> {
+    let wanted = application_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    let mut sessions = read_sessions();
+    sessions.reverse();
+    if let Some(id) = wanted {
+        sessions.retain(|session| session.application_id.as_deref() == Some(id));
+    }
+    sessions.truncate(5);
+    sessions
+}
+
+/// Write a finished debrief beside the workspace, so it outlives the palette.
+#[tauri::command]
+pub fn save_mock_debrief(
+    role: String,
+    markdown: String,
+    application_id: Option<String>,
+) -> Result<String, String> {
+    if markdown.trim().is_empty() {
+        return Err("There is no debrief to save yet.".to_string());
+    }
+    // A run practising for an application keeps its debrief in that
+    // application's folder; anything else falls back to the workspace folder.
+    let linked = application_id.as_deref().map(str::trim).filter(|id| {
+        !id.is_empty()
+            && id.chars().all(|character| {
+                character.is_ascii_alphanumeric() || character == '-' || character == '_'
+            })
+    });
+    let dir = match linked {
+        Some(id) => crate::interview_prep::application_dir(id)?.join("mock-debriefs"),
+        None => dirs::document_dir()
+            .ok_or("Failed to locate Documents folder")?
+            .join("CareerOS")
+            .join("mock-debriefs"),
+    };
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("Failed to create the debrief folder: {}", error))?;
+
+    let raw: String = role
+        .chars()
+        .take(60)
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = raw.trim_matches('-');
+    let slug = if trimmed.is_empty() { "mock-interview" } else { trimmed };
+    let path = dir.join(format!(
+        "{}-{}.md",
+        slug,
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    std::fs::write(&path, markdown)
+        .map_err(|error| format!("Failed to save the debrief: {}", error))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 /// One question from each group in turn, so a short run still tests behaviour,
-/// requirements and culture rather than only the first group in the bank.
-pub(crate) fn select_questions(bank: &[InterviewQuestion], count: usize) -> Vec<MockQuestion> {
-    let groups = ["technical", "behavioral", "culture-fit"];
+/// requirements and culture rather than only the first group in the bank. A
+/// focus group is drained first, and questions the last run asked sit at the
+/// back of their group so a repeat run is practice rather than a memory test.
+pub(crate) fn select_questions(
+    bank: &[InterviewQuestion],
+    count: usize,
+    focus: Option<&str>,
+    recent: &[String],
+) -> Vec<MockQuestion> {
+    let mut groups = vec!["technical", "behavioral", "culture-fit"];
+    if let Some(focus) = focus {
+        if groups.contains(&focus) {
+            groups.retain(|group| *group != focus);
+            groups.insert(0, focus);
+        }
+    }
     let mut buckets: Vec<Vec<&InterviewQuestion>> = groups
         .iter()
-        .map(|group| bank.iter().filter(|entry| entry.group == *group).collect())
+        .map(|group| {
+            let mut bucket: Vec<&InterviewQuestion> = bank
+                .iter()
+                .filter(|entry| entry.group == *group)
+                .collect();
+            bucket.sort_by_key(|entry| recent.iter().any(|asked| asked == &entry.question));
+            bucket
+        })
         .collect();
 
     let mut picked: Vec<&InterviewQuestion> = Vec::new();
+    // A focus group is asked until it runs out; the round-robin below then fills
+    // the rest of the run from the other groups.
+    if focus.is_some() {
+        while picked.len() < count && !buckets.is_empty() && !buckets[0].is_empty() {
+            picked.push(buckets[0].remove(0));
+        }
+    }
     let mut cursor = 0usize;
     while picked.len() < count && buckets.iter().any(|bucket| !bucket.is_empty()) {
         let slot = cursor % buckets.len();
@@ -345,6 +585,19 @@ pub(crate) fn select_questions(bank: &[InterviewQuestion], count: usize) -> Vec<
 
 fn says(padded: &str, phrase: &str) -> bool {
     padded.contains(&format!(" {} ", phrase))
+}
+
+/// Where an answer sits against the soft target: 90–120 seconds is typical and
+/// three minutes is long. It is a reading of the clock only, so it never moves
+/// a score.
+fn pacing_band(elapsed_seconds: Option<u64>) -> Option<&'static str> {
+    let seconds = elapsed_seconds?;
+    Some(match seconds {
+        0..=44 => "short",
+        45..=120 => "on-target",
+        121..=179 => "over",
+        _ => "long",
+    })
 }
 
 /// Delivery facts computed from the answer itself, never guessed.
@@ -389,6 +642,8 @@ pub(crate) fn measure_answer(answer: &str, elapsed_seconds: Option<u64>) -> Answ
             .iter()
             .filter(|token| matches!(token.as_str(), "we" | "our" | "us"))
             .count(),
+        elapsed_seconds,
+        pacing: pacing_band(elapsed_seconds).map(str::to_string),
     }
 }
 
@@ -1017,6 +1272,7 @@ pub fn plan_mock_interview(
     mode: Option<String>,
     persona: Option<String>,
     question_count: Option<usize>,
+    focus: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<MockPlan, String> {
     let role = role.trim().to_string();
@@ -1025,10 +1281,19 @@ pub fn plan_mock_interview(
     }
 
     let grounded = grounded_bank(&state, application_id.as_deref())?;
-    let questions = select_questions(&grounded.questions, clamp_count(question_count));
+    let focus = normalize_focus(focus.as_deref());
+    let questions = select_questions(
+        &grounded.questions,
+        clamp_count(question_count),
+        focus,
+        &recent_questions(),
+    );
     if questions.is_empty() {
         return Err("No grounded questions could be built from the ledger.".to_string());
     }
+    // Only a plan that actually starts records its questions, so a failed start
+    // cannot push a run's questions out of the rotation.
+    remember_questions(&questions);
 
     let mode = normalize_mode(mode.as_deref());
     let persona = normalize_persona(persona.as_deref());
@@ -1046,6 +1311,8 @@ pub fn plan_mock_interview(
         role,
         mode,
         persona,
+        focus: focus.map(str::to_string),
+        application_id,
         questions,
         grounded_in: grounded.claims,
         posting_available: grounded.posting_available,
@@ -1160,6 +1427,8 @@ pub fn plan_mock_drill(
         role,
         mode: MODE_COACHING.to_string(),
         persona: normalize_persona(persona.as_deref()),
+        focus: None,
+        application_id,
         questions: picked,
         grounded_in: grounded.claims,
         posting_available: grounded.posting_available,
@@ -1345,6 +1614,7 @@ pub async fn finish_mock_interview(
     mode: Option<String>,
     turns: Vec<MockTurnInput>,
     persona: Option<String>,
+    application_id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     if turns.is_empty() {
@@ -1383,6 +1653,19 @@ pub async fn finish_mock_interview(
     let next_steps = clean_list(draft.next_steps);
     let mode = normalize_mode(mode.as_deref());
 
+    // The run outlives the palette: history is written here, so closing the
+    // session (or the app) cannot lose it.
+    let date = chrono::Local::now().format("%Y-%m-%d %H:%M").to_string();
+    remember_session(session_record(
+        &role,
+        &mode,
+        &persona,
+        application_id.as_deref(),
+        turns.len(),
+        &scored,
+        &date,
+    ));
+
     Ok(render_debrief(
         &role,
         &mode,
@@ -1398,7 +1681,7 @@ mod tests {
     use super::{
         fallback_feedback, measure_answer, needs_follow_up, normalize_persona, persona_ack,
         persona_follow_up_ack, persona_system, pick_drill_questions, render_debrief,
-        select_questions, MockTurnInput,
+        select_questions, session_record, MockTurnInput,
     };
     use crate::claims::Claim;
     use crate::interview_prep::assemble_questions;
@@ -1427,7 +1710,7 @@ As a result onboarding dropped to nine days and support tickets fell 40 percent.
     fn the_plan_covers_every_group_before_repeating_one() {
         let claims = vec![claim("Cut planning time from 8 hours to 30 minutes")];
         let bank = assemble_questions("", &[], &[], &claims, &[]);
-        let plan = select_questions(&bank, 6);
+        let plan = select_questions(&bank, 6, None, &[]);
 
         assert_eq!(plan.len(), 6);
         assert_eq!(plan[0].group, "technical");
@@ -1441,7 +1724,7 @@ As a result onboarding dropped to nine days and support tickets fell 40 percent.
     fn a_drill_keeps_only_the_named_questions_in_order() {
         let claims = vec![claim("Cut planning time from 8 hours to 30 minutes")];
         let bank = assemble_questions("", &[], &[], &claims, &[]);
-        let full = select_questions(&bank, 6);
+        let full = select_questions(&bank, 6, None, &[]);
         let wanted = vec![
             full[3].text.clone(),
             "A question that is not in the bank".to_string(),
@@ -1455,6 +1738,98 @@ As a result onboarding dropped to nine days and support tickets fell 40 percent.
         assert_eq!(drill[1].text, full[0].text);
         assert_eq!(drill[0].index, 1);
         assert_eq!(drill[1].index, 2);
+    }
+
+    #[test]
+    fn a_focus_group_is_asked_before_the_others() {
+        let claims = vec![claim("Cut planning time from 8 hours to 30 minutes")];
+        let bank = assemble_questions("", &[], &[], &claims, &[]);
+
+        let plan = select_questions(&bank, 3, Some("behavioral"), &[]);
+
+        assert_eq!(plan.len(), 3);
+        assert!(
+            plan.iter().all(|question| question.group == "behavioral"),
+            "the focus group fills the run while it has questions left"
+        );
+    }
+
+    #[test]
+    fn the_questions_a_run_asked_are_asked_last_next_time() {
+        let claims = vec![claim("Cut planning time from 8 hours to 30 minutes")];
+        let bank = assemble_questions("", &[], &[], &claims, &[]);
+
+        let first = select_questions(&bank, 3, None, &[]);
+        let asked: Vec<String> = first
+            .iter()
+            .map(|question| question.text.clone())
+            .collect();
+        let second = select_questions(&bank, 3, None, &asked);
+
+        assert_eq!(second.len(), 3);
+        assert!(
+            !second.iter().any(|question| question.text == first[1].text),
+            "the behavioural question from the first run should not repeat"
+        );
+    }
+
+    #[test]
+    fn a_bank_that_was_all_asked_still_fills_the_run() {
+        let claims = vec![claim("Cut planning time from 8 hours to 30 minutes")];
+        let bank = assemble_questions("", &[], &[], &claims, &[]);
+        let asked: Vec<String> = bank
+            .iter()
+            .map(|question| question.question.clone())
+            .collect();
+
+        let plan = select_questions(&bank, 3, None, &asked);
+
+        assert_eq!(plan.len(), 3, "rotation never shrinks the run");
+    }
+
+    #[test]
+    fn a_finished_run_is_summarized_for_history() {
+        let metrics = measure_answer(STAR_ANSWER, Some(95));
+        let feedback = fallback_feedback("Tell me about onboarding", "", STAR_ANSWER, &metrics);
+        let overall = feedback.overall;
+        let turns = vec![MockTurnInput {
+            question: "Tell me about onboarding".to_string(),
+            group: "behavioral".to_string(),
+            answer: STAR_ANSWER.to_string(),
+            follow_up_answer: None,
+            skipped: false,
+        }];
+
+        let record = session_record(
+            "Director of Training",
+            "coaching",
+            "professional",
+            Some("app-1"),
+            turns.len(),
+            &[(0, feedback)],
+            "2026-11-10 09:30",
+        );
+
+        assert_eq!(record.role, "Director of Training");
+        assert_eq!(
+            record.application_id.as_deref(),
+            Some("app-1"),
+            "the run remembers the application it filed under"
+        );
+        assert_eq!(record.answered, 1);
+        assert_eq!(record.asked, 1);
+        assert_eq!(record.average, overall, "the average is the measured score");
+        assert!(!record.weakest.is_empty(), "a dimension is named as the weak spot");
+    }
+
+    #[test]
+    fn a_run_with_no_scored_answer_still_records() {
+        let record = session_record("Director", "coaching", "professional", None, 2, &[], "now");
+
+        assert_eq!(record.answered, 0);
+        assert_eq!(record.average, 0);
+        assert_eq!(record.weakest, "");
+        assert_eq!(record.asked, 2);
     }
 
     #[test]
@@ -1482,6 +1857,41 @@ As a result onboarding dropped to nine days and support tickets fell 40 percent.
         assert!(metrics.hedges.contains(&"i think".to_string()));
         assert!(metrics.hedges.contains(&"kind of".to_string()));
         assert!(!metrics.star.result, "no outcome was stated");
+    }
+
+    #[test]
+    fn the_clock_is_read_against_the_soft_target() {
+        assert_eq!(
+            measure_answer(STAR_ANSWER, Some(20)).pacing.as_deref(),
+            Some("short")
+        );
+        assert_eq!(
+            measure_answer(STAR_ANSWER, Some(95)).pacing.as_deref(),
+            Some("on-target")
+        );
+        assert_eq!(
+            measure_answer(STAR_ANSWER, Some(150)).pacing.as_deref(),
+            Some("over")
+        );
+        let long = measure_answer(STAR_ANSWER, Some(240));
+        assert_eq!(long.pacing.as_deref(), Some("long"));
+        assert_eq!(long.elapsed_seconds, Some(240));
+        assert_eq!(measure_answer(STAR_ANSWER, None).pacing, None);
+    }
+
+    #[test]
+    fn a_slow_answer_reads_as_long_without_scoring_worse() {
+        let question = "Tell me about a time you led a change.";
+        let quick = measure_answer(STAR_ANSWER, Some(60));
+        let slow = measure_answer(STAR_ANSWER, Some(240));
+
+        assert_eq!(quick.pacing.as_deref(), Some("on-target"));
+        assert_eq!(slow.pacing.as_deref(), Some("long"));
+        assert_eq!(
+            fallback_feedback(question, "", STAR_ANSWER, &slow).overall,
+            fallback_feedback(question, "", STAR_ANSWER, &quick).overall,
+            "pacing is a reading of the clock, never a penalty"
+        );
     }
 
     #[test]

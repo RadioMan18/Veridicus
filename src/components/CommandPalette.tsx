@@ -5,14 +5,17 @@ import { CornerDownLeft } from 'lucide-react';
 import ApplyTimeline, { initialStageStates, type StageState } from './ApplyTimeline';
 import { withCompletionChime } from '../lib/completionSound';
 import Markdown from './Markdown';
+import { copyText } from './Toaster';
 import MockSessionPanel, {
   MockSetupPanel,
   personaLabel,
   weakestTurns,
+  type MockApplicationOption,
   type MockDrillResult,
   type MockEvaluation,
   type MockPlan,
   type MockSession,
+  type MockSessionRecord,
   type MockTurn,
 } from './MockInterview';
 
@@ -89,9 +92,9 @@ const COMMANDS: PaletteCommand[] = [
   {
     id: '/mock',
     description: 'Practice interview: one question at a time, with a debrief',
-    hint: 'a role title, optionally --simulation',
+    hint: 'a role title, or leave it empty for the latest application',
     example: '/mock Director of Training --simulation',
-    takesArgument: true,
+    takesArgument: false,
   },
   {
     id: '/resume',
@@ -173,8 +176,16 @@ export default function CommandPalette({
     role: string;
     mode: string;
     persona: string;
+    questionCount: number;
+    focus: string;
+    applicationId: string | null;
   } | null>(null);
+  const [mockApplications, setMockApplications] = useState<MockApplicationOption[]>([]);
   const [mockBusy, setMockBusy] = useState(false);
+  const [mockHistory, setMockHistory] = useState<MockSessionRecord[]>([]);
+  // The debrief last pushed into the output, so closing the session does not add
+  // a second copy of a debrief the candidate already kept.
+  const pushedDebriefRef = useRef<string | null>(null);
   const [recents, setRecents] = useState<string[]>([]);
   const outputRef = useRef<HTMLDivElement | null>(null);
   const executingRef = useRef(false);
@@ -347,17 +358,57 @@ export default function CommandPalette({
     }
   };
 
-  const startMock = async (role: string, mode: string, persona: string) => {
+  // The applications a run can file under, newest first.
+  const loadApplications = async (): Promise<MockApplicationOption[]> => {
+    try {
+      const records: any[] = await invoke('get_application_records');
+      if (!Array.isArray(records)) return [];
+      return records
+        .filter((record) => record?.id)
+        .map((record) => ({
+          id: String(record.id),
+          role: String(record.role ?? ''),
+          employer: String(record.employer ?? ''),
+        }));
+    } catch {
+      return [];
+    }
+  };
+
+  // The picker's default: the application whose role matches what the candidate
+  // typed, and no link at all when none does.
+  const matchingApplication = (
+    applications: MockApplicationOption[],
+    role: string,
+  ): string | null => {
+    const wanted = role.trim().toLowerCase();
+    if (!wanted) return null;
+    return (
+      applications.find((record) => record.role.trim().toLowerCase() === wanted)?.id ?? null
+    );
+  };
+
+  const startMock = async (
+    role: string,
+    mode: string,
+    persona: string,
+    questionCount: number,
+    focus: string,
+    applicationId: string | null,
+  ) => {
     setMockBusy(true);
     setMockSetup(null);
+    setMockApplications([]);
+    pushedDebriefRef.current = null;
     try {
       const plan: MockPlan = await withCompletionChime(() =>
         invoke('plan_mock_interview', {
           role,
-          applicationId: null,
+          applicationId,
           mode,
           persona,
-          questionCount: null,
+          questionCount,
+          focus: focus === 'all' ? null : focus,
         }),
         { label: 'Mock interview plan' },
       );
@@ -371,6 +422,7 @@ export default function CommandPalette({
         status: 'asking',
         debrief: null,
         drill: null,
+        previousAttempt: null,
       });
       onHistory({
         kind: 'success',
@@ -383,6 +435,44 @@ export default function CommandPalette({
     }
   };
 
+  // R7: the debrief is the artifact worth keeping, so it can leave the session
+  // three ways — clipboard, a markdown file, or the palette history.
+  const copyMockDebrief = async () => {
+    const debrief = mockSession?.debrief;
+    if (!debrief) return;
+    const copied = await copyText(debrief);
+    onHistory({
+      kind: copied ? 'success' : 'error',
+      text: copied
+        ? 'Debrief copied to the clipboard.'
+        : 'The clipboard is blocked here; the debrief is still on screen.',
+    });
+  };
+
+  const saveMockDebrief = async () => {
+    if (!mockSession?.debrief) return;
+    try {
+      const path: string = await invoke('save_mock_debrief', {
+        role: mockSession.plan.role,
+        markdown: mockSession.debrief,
+        applicationId: mockSession.plan.application_id,
+      });
+      onHistory({ kind: 'success', text: `Debrief saved to ${path}` });
+    } catch (error: any) {
+      onHistory({
+        kind: 'error',
+        text: `The debrief could not be saved: ${error?.message || String(error)}`,
+      });
+    }
+  };
+
+  const pushMockDebrief = () => {
+    const debrief = mockSession?.debrief;
+    if (!debrief) return;
+    pushedDebriefRef.current = debrief;
+    onHistory({ kind: 'info', text: debrief });
+  };
+
   const beginMock = async (rawArgument: string) => {
     const simulation = /(^|\s)--(simulation|sim|real|realistic)\b/i.test(rawArgument);
     const personaFlag = /(^|\s)--(?:persona|voice)\s+(\S+)/i.exec(rawArgument)?.[2]?.toLowerCase();
@@ -391,6 +481,46 @@ export default function CommandPalette({
       .replace(/--\S+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
+
+    const mode = simulation ? 'simulation' : 'coaching';
+    // Mode, length and focus live on the setup card, so /mock opens it. The role
+    // starts on the latest application when the command did not name one.
+    if (!personaFlag) {
+      let suggested = role;
+      // The card also shows the last few runs and the applications a run can
+      // file under, so fetch both before it opens.
+      let past: MockSessionRecord[] = [];
+      try {
+        const records = await invoke<MockSessionRecord[]>('recent_mock_sessions', {
+          applicationId: null,
+        });
+        past = Array.isArray(records) ? records : [];
+      } catch {
+        past = [];
+      }
+      const applications = await loadApplications();
+      if (!suggested) suggested = applications[0]?.role ?? '';
+      if (!suggested) {
+        onHistory({
+          kind: 'error',
+          text: 'Give /mock a role title, or run /apply first so the latest role fills it in. Example: /mock Director of Training',
+        });
+        return;
+      }
+      setCommand('');
+      setMockHistory(past);
+      setMockApplications(applications);
+      setMockSetup({
+        role: suggested,
+        applicationId: matchingApplication(applications, suggested),
+        mode,
+        persona: 'professional',
+        questionCount: 6,
+        focus: 'all',
+      });
+      return;
+    }
+
     if (!role) {
       onHistory({
         kind: 'error',
@@ -398,16 +528,15 @@ export default function CommandPalette({
       });
       return;
     }
-
-    const mode = simulation ? 'simulation' : 'coaching';
-    // The persona shapes every reaction in the run, so ask for it before the
-    // first question unless the command already named one.
-    if (!personaFlag) {
-      setCommand('');
-      setMockSetup({ role, mode, persona: 'professional' });
-      return;
-    }
-    await startMock(role, mode, personaFlag);
+    // No card on this path, so the match is the only link there is.
+    await startMock(
+      role,
+      mode,
+      personaFlag,
+      6,
+      'all',
+      matchingApplication(await loadApplications(), role),
+    );
   };
 
   const finishMock = async (plan: MockPlan, transcript: MockTurn[]) => {
@@ -420,6 +549,7 @@ export default function CommandPalette({
             role: plan.role,
             mode: plan.mode,
             persona: plan.persona,
+            applicationId: plan.application_id,
             turns: transcript.map((turn) => ({
               question: turn.question,
               group: turn.group,
@@ -457,6 +587,8 @@ export default function CommandPalette({
 
     const isFollowUp = Boolean(mockSession.active?.followUp);
     const firstAnswer = mockSession.active?.answer ?? text;
+    // The panel restarts its visible clock on a follow-up, but the metric covers
+    // the whole question, because the text scored here is both parts combined.
     const elapsedSeconds = Math.max(
       1,
       Math.round((Date.now() - mockSession.questionStartedAt) / 1000),
@@ -485,14 +617,23 @@ export default function CommandPalette({
         return;
       }
 
+      // A redo compares against the attempt it replaced: the score it got and
+      // the fixes that no longer apply.
+      const previous = mockSession.previousAttempt;
+      const feedback = evaluation.feedback;
       const turn: MockTurn = {
         question: question.text,
         group: question.group,
         answer: firstAnswer,
         followUpQuestion: mockSession.active?.followUp ?? null,
         followUpAnswer: isFollowUp ? text : null,
-        feedback: evaluation.feedback,
+        feedback,
         skipped: false,
+        previousScore: previous?.score ?? null,
+        addressed:
+          previous && feedback
+            ? previous.fixes.filter((fix) => !feedback.fixes.includes(fix))
+            : [],
       };
       const transcript = [...mockSession.transcript, turn];
 
@@ -508,6 +649,7 @@ export default function CommandPalette({
           transcript,
           active: null,
           questionStartedAt: Date.now(),
+          previousAttempt: null,
         });
         if (evaluation.model_note) {
           onHistory({ kind: 'info', text: evaluation.model_note });
@@ -535,6 +677,8 @@ export default function CommandPalette({
         followUpAnswer: null,
         feedback: null,
         skipped: true,
+        previousScore: null,
+        addressed: [],
       },
     ];
 
@@ -546,7 +690,13 @@ export default function CommandPalette({
       await finishMock(mockSession.plan, transcript);
       return;
     }
-    setMockSession({ ...mockSession, transcript, active: null, questionStartedAt: Date.now() });
+    setMockSession({
+      ...mockSession,
+      transcript,
+      active: null,
+      questionStartedAt: Date.now(),
+      previousAttempt: null,
+    });
   };
 
   const retryMock = () => {
@@ -555,13 +705,24 @@ export default function CommandPalette({
       onHistory({ kind: 'info', text: 'Nothing to redo yet.' });
       return;
     }
+    // The attempt is lifted out of the transcript rather than discarded, so the
+    // next answer can show both scores and the fixes it addressed.
+    const replaced = mockSession.transcript[mockSession.transcript.length - 1];
     setMockSession({
       ...mockSession,
       transcript: mockSession.transcript.slice(0, -1),
       active: null,
       questionStartedAt: Date.now(),
+      previousAttempt: replaced.feedback
+        ? { score: replaced.feedback.overall, fixes: replaced.feedback.fixes }
+        : null,
     });
-    onHistory({ kind: 'info', text: 'Redoing the previous question.' });
+    onHistory({
+      kind: 'info',
+      text: replaced.feedback
+        ? `Redoing the previous question — you scored ${replaced.feedback.overall}. Beat it.`
+        : 'Redoing the previous question.',
+    });
   };
 
   const endMock = async () => {
@@ -580,6 +741,8 @@ export default function CommandPalette({
           followUpAnswer: null,
           feedback: null,
           skipped: false,
+          previousScore: null,
+          addressed: [],
         });
       }
     }
@@ -639,10 +802,11 @@ export default function CommandPalette({
   ) => {
     if (questions.length === 0) return;
     setMockBusy(true);
+    pushedDebriefRef.current = null;
     try {
       const plan: MockPlan = await invoke('plan_mock_drill', {
         role,
-        applicationId: null,
+        applicationId: mockSession?.plan.application_id ?? null,
         questions,
         persona: mockSession?.plan.persona ?? 'professional',
       });
@@ -656,6 +820,7 @@ export default function CommandPalette({
         status: 'asking',
         debrief: null,
         drill: { baseline, round, results: [], role },
+        previousAttempt: null,
       });
       onHistory({
         kind: 'info',
@@ -1160,12 +1325,48 @@ export default function CommandPalette({
             role={mockSetup.role}
             mode={mockSetup.mode}
             persona={mockSetup.persona}
+            questionCount={mockSetup.questionCount}
+            focus={mockSetup.focus}
+            applicationId={mockSetup.applicationId}
+            applications={mockApplications}
+            history={mockHistory}
             busy={mockBusy}
+            onRole={(role) =>
+              setMockSetup((current) => (current ? { ...current, role } : current))
+            }
+            onApplication={(nextId) => {
+              const picked = mockApplications.find((record) => record.id === nextId);
+              setMockSetup((current) =>
+                current
+                  ? {
+                      ...current,
+                      applicationId: nextId,
+                      role: picked ? picked.role : current.role,
+                    }
+                  : current,
+              );
+            }}
+            onMode={(mode) =>
+              setMockSetup((current) => (current ? { ...current, mode } : current))
+            }
+            onCount={(questionCount) =>
+              setMockSetup((current) => (current ? { ...current, questionCount } : current))
+            }
+            onFocus={(focus) =>
+              setMockSetup((current) => (current ? { ...current, focus } : current))
+            }
             onPersona={(persona) =>
               setMockSetup((current) => (current ? { ...current, persona } : current))
             }
             onStart={() => {
-              void startMock(mockSetup.role, mockSetup.mode, mockSetup.persona);
+              void startMock(
+                mockSetup.role.trim(),
+                mockSetup.mode,
+                mockSetup.persona,
+                mockSetup.questionCount,
+                mockSetup.focus,
+                mockSetup.applicationId,
+              );
             }}
             onCancel={() => setMockSetup(null)}
           />
@@ -1226,13 +1427,25 @@ export default function CommandPalette({
               }}
               onRetry={retryMock}
               onRestart={() => {
-                void beginMock(
-                  `${mockSession.plan.role} --persona ${mockSession.plan.persona}${
-                    mockSession.plan.mode === 'simulation' ? ' --simulation' : ''
-                  }`,
+                // Practice again repeats the settings the run started with; the
+                // setup card is only shown when it is asked for.
+                void startMock(
+                  mockSession.plan.role,
+                  mockSession.plan.mode,
+                  mockSession.plan.persona,
+                  mockSession.plan.questions.length,
+                  mockSession.plan.focus ?? 'all',
+                  mockSession.plan.application_id,
                 );
               }}
               onDrill={drillSession}
+              onCopyDebrief={() => {
+                void copyMockDebrief();
+              }}
+              onSaveDebrief={() => {
+                void saveMockDebrief();
+              }}
+              onPushDebrief={pushMockDebrief}
               onDone={() => {
                 if (mockSession.drill && mockSession.drill.results.length > 0) {
                   const improved = mockSession.drill.results.filter(
@@ -1242,7 +1455,10 @@ export default function CommandPalette({
                     kind: 'success',
                     text: `**Drill round ${mockSession.drill.round}** — ${improved} of ${mockSession.drill.results.length} answer(s) improved.`,
                   });
-                } else if (mockSession.debrief) {
+                } else if (
+                  mockSession.debrief &&
+                  pushedDebriefRef.current !== mockSession.debrief
+                ) {
                   onHistory({ kind: 'success', text: mockSession.debrief });
                 }
                 setMockSession(null);

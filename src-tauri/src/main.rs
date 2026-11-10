@@ -117,6 +117,8 @@ pub fn main() {
             mock_interview::plan_mock_drill,
             mock_interview::evaluate_mock_answer,
             mock_interview::finish_mock_interview,
+            mock_interview::recent_mock_sessions,
+            mock_interview::save_mock_debrief,
             bullet_review::review_bullets,
             bullet_review::record_approved_wording,
             recruiter_review::generate_recruiter_review,
