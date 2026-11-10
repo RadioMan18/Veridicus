@@ -233,4 +233,4 @@ The limitations are part of the record: it is local and unsigned, rule changes a
 
 ## License
 
-Private/Proprietary
+Released under the [Apache License 2.0](LICENSE). You are free to use, modify and distribute Veridicus under its terms; the licence text in [`LICENSE`](LICENSE) is authoritative.
