@@ -19,9 +19,9 @@ jobs:
     name: TypeScript typecheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -36,7 +36,7 @@ jobs:
     # the credential store), so the suite runs on the platform the app ships to.
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -44,7 +44,7 @@ jobs:
         with:
           workspaces: 'src-tauri -> target'
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
           cache: npm
@@ -55,6 +55,8 @@ jobs:
 
       - run: npm run build
 
+      # `Cargo.lock` is ignored by this repository, so the runner resolves the
+      # dependency graph fresh rather than pinning it with `--locked`.
       - name: cargo test --bins
         working-directory: src-tauri
-        run: cargo test --bins --locked
+        run: cargo test --bins
