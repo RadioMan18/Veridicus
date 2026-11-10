@@ -33,7 +33,7 @@ Each stage emits progress and can be cancelled; artifacts are previewed in the a
 ### Documents
 
 - **Tailored resume** — written in your own resume voice (bold capitals headline, professional summary, grouped competencies, labelled bullets), and its structure is validated, not just prose: each role keeps the employer, title and date range from your base resume, and Education may only contain degrees, credentials and institutions. A resume that loses its dates or files a role under Education is repaired deterministically (dates copied back from the base resume, the duplicate removed from Education) instead of failing the apply.
-- **Cover letter** — five paragraphs and 350–480 words, ending with a paragraph that names each required gap plainly. The model writes the body; Veridicus composes the letterhead, date, recipient block, salutation and signature so the letter is a letter, the salutation always names the posting's employer, and the sign-off never collapses into one line.
+- **Cover letter** — written in your own first-person voice, five paragraphs and 350–480 words, ending with a paragraph that names each required gap plainly. The model writes the body; Veridicus composes the letterhead, date, recipient block, salutation and signature so the letter is a letter, the salutation always names the posting's employer, and the sign-off never collapses into one line.
 - **Prompt templates you can edit** — plain Markdown in `Documents/Veridicus/.veridicus/skills/`, one file per skill, where the body is the whole system prompt. Shipped templates carry a version; on upgrade the old file is kept as `<skill>.md.v<old>.bak`.
 - **Outputs** — Typst PDF, plus ATS-oriented DOCX and ODT export of the master resume.
 
@@ -128,6 +128,15 @@ Production build:
 ```bash
 npm run tauri build
 ```
+
+That builds the frontend, the release binary and two installers in `src-tauri/target/release/bundle/`, both stamped with the version in `src-tauri/tauri.conf.json`:
+
+| Installer | Output | Hand it to |
+| --- | --- | --- |
+| NSIS `.exe` | `bundle/nsis/Veridicus_<version>_x64-setup.exe` | Most people. Installs per user with no admin prompt, adds the Start-menu shortcut and an uninstall entry, and is roughly a third smaller than the MSI. |
+| MSI | `bundle/msi/Veridicus_<version>_x64_en-US.msi` | Managed or scripted deployment: `msiexec /i`, Intune, Group Policy. Installs for all users, so it needs elevation. |
+
+Neither installer is code-signed, so Windows SmartScreen warns on first run while the download builds reputation. Install one or the other rather than both: they carry the same `com.veridicus.desktop` identifier and write the same user workspace, so a second install only duplicates the app.
 
 ## Developing
 

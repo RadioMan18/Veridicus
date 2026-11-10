@@ -1,6 +1,6 @@
 # Veridicus AI system card
 
-**System:** Veridicus Desktop, version 0.1.0
+**System:** Veridicus Desktop, version 1.0.0
 **Document status:** Phase 0–P2 compliance evidence. This is not a certification.
 **Last reviewed:** 2026-11-07
 

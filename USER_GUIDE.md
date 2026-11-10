@@ -73,7 +73,7 @@ The main workflow for applying to a job posting.
 1. Scrapes the job description from the URL
 2. Runs gap analysis against your Claims Ledger
 3. Generates a tailored resume using only confirmed claims
-4. Generates a cover letter using only confirmed claims - five paragraphs, 350-480 words, with any required gap named plainly in its own paragraph
+4. Generates a first-person cover letter using only confirmed claims - five paragraphs, 350-480 words, with any required gap named plainly in its own paragraph
 5. Runs fact-check pass to ensure no hallucinations
 6. Compiles PDF using Typst
 7. Performs visual QA on generated PDFs
