@@ -1,6 +1,6 @@
 # Veridicus
 
-[![CI](https://github.com/RadioMan18/careeros/actions/workflows/ci.yml/badge.svg)](https://github.com/RadioMan18/careeros/actions/workflows/ci.yml)
+[![CI](https://github.com/RadioMan18/veridicus/actions/workflows/ci.yml/badge.svg)](https://github.com/RadioMan18/veridicus/actions/workflows/ci.yml)
 
 Privacy-first job search OS with honesty guardrails. Veridicus is a Tauri 2 desktop application (Rust + React + TypeScript) that runs the whole application workflow — scrape a posting, tailor a resume and cover letter, compile PDFs, practice the interview, follow up — while only ever stating facts the candidate has verified.
 
