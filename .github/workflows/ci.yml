@@ -57,16 +57,35 @@ jobs:
 
       # SQLCipher is built from source and links the system OpenSSL, but the
       # Windows images ship OpenSSL "light", without its development headers.
+      # `libsqlite3-sys` reads OPENSSL_LIB_DIR and OPENSSL_INCLUDE_DIR ahead of
+      # any probing, so both are pinned to whichever install has the headers.
       - name: Install OpenSSL development headers
         shell: pwsh
         run: |
-          $root = "C:\Program Files\OpenSSL-Win64"
-          if (-not (Test-Path "$root\include\openssl\crypto.h")) {
+          $candidates = @("C:\Program Files\OpenSSL", "C:\Program Files\OpenSSL-Win64")
+          $root = $candidates | Where-Object { Test-Path "$_\include\openssl\crypto.h" } |
+            Select-Object -First 1
+          if (-not $root) {
             choco install openssl --no-progress -y --force
+            $root = $candidates | Where-Object { Test-Path "$_\include\openssl\crypto.h" } |
+              Select-Object -First 1
           }
-          if (-not (Test-Path "$root\include\openssl\crypto.h")) {
-            throw "OpenSSL headers are still missing under $root\include"
+          if (-not $root) {
+            throw "OpenSSL development headers were not found in: $($candidates -join ', ')"
           }
+          # Prefer the release import library, not the debug one, and the x64 build.
+          $lib = Get-ChildItem -Path $root -Recurse -Filter libcrypto.lib -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' -and $_.FullName -notmatch '\\MDd\\' } |
+            Sort-Object { $_.FullName -match '\\MD\\' } -Descending |
+            Select-Object -First 1
+          if (-not $lib) {
+            throw "No x64 libcrypto.lib was found under $root"
+          }
+          "OPENSSL_INCLUDE_DIR=$root\include" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "OPENSSL_LIB_DIR=$($lib.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          Write-Host "OpenSSL headers: $root\include"
+          Write-Host "OpenSSL libraries: $($lib.Directory.FullName)"
 
       # `Cargo.lock` is ignored by this repository, so the runner resolves the
       # dependency graph fresh rather than pinning it with `--locked`.
