@@ -1,0 +1,16 @@
+title: Veridicus documentation
+description: Privacy-first job search OS with honesty guardrails
+theme: minima
+
+# Docs pages link to each other as .md; this rewrites those links to .html.
+relative_links:
+  enabled: true
+
+# Always rebuild the pages from source rather than shipping stale HTML.
+plugins:
+  - jekyll-relative-links
+
+header_pages:
+  - COMPLIANCE-EVIDENCE.md
+  - GUARDRAIL-METHOD.md
+  - AI-SYSTEM-CARD.md
