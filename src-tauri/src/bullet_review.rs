@@ -4,8 +4,10 @@
 //! bullet comes back as `needs_human_input` or `blocked`, with the offending
 //! number named — never as plausible prose the candidate cannot defend.
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::sync::OnceLock;
 use tauri::State;
 
 use crate::claims::Claim;
@@ -47,6 +49,44 @@ struct RewriteDraft {
 struct RewriteResponse {
     #[serde(default)]
     bullets: Vec<RewriteDraft>,
+}
+
+/// Models sometimes cite a claim as `[uuid]`; those digits are not metrics.
+static CLAIM_CITATION: OnceLock<Regex> = OnceLock::new();
+
+fn strip_claim_citations(text: &str) -> String {
+    let pattern = CLAIM_CITATION.get_or_init(|| {
+        Regex::new(r"(?i)\[?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\]?")
+            .expect("claim citation pattern")
+    });
+    pattern.replace_all(text, "").to_string()
+}
+
+/// Glue words that do not identify which achievement a bullet is about.
+const SUBJECT_STOPWORDS: &[&str] = &[
+    "with", "from", "that", "this", "through", "across", "into", "within", "their", "there",
+    "been", "were", "have", "them", "they", "your", "will", "over", "under", "then", "than",
+    "also", "more", "most", "less", "least", "used", "using", "including", "plus", "only",
+    "just", "each", "both", "when", "what", "which", "while", "after", "before", "about",
+    "against", "between", "during",
+];
+
+fn content_words(text: &str) -> HashSet<String> {
+    text.to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| word.chars().count() >= 4 && !SUBJECT_STOPWORDS.contains(word))
+        .map(str::to_string)
+        .collect()
+}
+
+/// A rewrite may rephrase a bullet, but it may not answer a different one.
+fn subject_changed(original: &str, rewrite: &str) -> bool {
+    let original_words = content_words(original);
+    let rewrite_words = content_words(rewrite);
+    if original_words.is_empty() || rewrite_words.is_empty() {
+        return false;
+    }
+    original_words.is_disjoint(&rewrite_words)
 }
 
 fn numeric_tokens(text: &str) -> Vec<String> {
@@ -104,7 +144,8 @@ pub(crate) fn classify_rewrite(
     rewrite: &str,
     claims: &[Claim],
 ) -> BulletRewrite {
-    let rewrite = rewrite.trim();
+    let cleaned = strip_claim_citations(rewrite);
+    let rewrite = cleaned.trim();
     if rewrite.is_empty() {
         return needs_human_input(
             original,
@@ -142,6 +183,13 @@ pub(crate) fn classify_rewrite(
         );
     }
 
+    if subject_changed(original, rewrite) {
+        return needs_human_input(
+            original,
+            "the rewrite dropped the original bullet's subject; rewrite that same achievement or return nothing".to_string(),
+        );
+    }
+
     if !is_grounded(rewrite, claims) {
         return needs_human_input(
             original,
@@ -164,6 +212,18 @@ pub(crate) fn classify_rewrite(
         status: "rewritten".to_string(),
         problem: None,
     }
+}
+
+fn demo_drafts() -> Option<Vec<RewriteDraft>> {
+    let path = std::env::var("VERIDICUS_DEMO_BULLETS").ok()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    parse_demo_drafts(&raw)
+}
+
+fn parse_demo_drafts(raw: &str) -> Option<Vec<RewriteDraft>> {
+    serde_json::from_str::<RewriteResponse>(raw)
+        .ok()
+        .map(|parsed| parsed.bullets)
 }
 
 fn review_prompt(bullets: &[String], jd_text: &str, claims: &[Claim]) -> String {
@@ -320,20 +380,26 @@ Never invent facts, numbers, tools or scope. Return JSON only."
         },
     ];
 
-    let drafts: Vec<RewriteDraft> = match chat_with_ollama_async(
-        model.clone(),
-        messages,
-        Some(0.3),
-        Some(1500),
-        Some("json".to_string()),
-        config.num_ctx,
-    )
-    .await
-    {
-        Ok(response) => serde_json::from_str::<RewriteResponse>(response.message.content.trim())
-            .map(|parsed| parsed.bullets)
-            .unwrap_or_default(),
-        Err(_) => Vec::new(),
+    // A checked-in fixture can stand in for the model so the blocked-claim flow is
+    // reproducible for screenshots and recordings. It still passes through every
+    // classifier below, so a fixture cannot fake a pass the guards would refuse.
+    let drafts: Vec<RewriteDraft> = match demo_drafts() {
+        Some(drafts) => drafts,
+        None => match chat_with_ollama_async(
+            model.clone(),
+            messages,
+            Some(0.3),
+            Some(1500),
+            Some("json".to_string()),
+            config.num_ctx,
+        )
+        .await
+        {
+            Ok(response) => serde_json::from_str::<RewriteResponse>(response.message.content.trim())
+                .map(|parsed| parsed.bullets)
+                .unwrap_or_default(),
+            Err(_) => Vec::new(),
+        },
     };
 
     let mut reviewed: Vec<BulletRewrite> = Vec::with_capacity(bullets.len());
@@ -508,5 +574,47 @@ mod tests {
             )
             .unwrap();
         assert!(stored.contains("[ADD SCOPE]"));
+    }
+
+    #[test]
+    fn claim_citations_are_not_counted_as_numbers() {
+        let result = classify_rewrite(
+            "Cut reporting costs",
+            "Cut reporting costs by 12% for the division [9abc6037-707e-4531-a654-5947e610666c]",
+            &[claim("claim-1", "Cut reporting costs by 12% for the division")],
+        );
+        assert_eq!(result.status, "rewritten", "problem: {:?}", result.problem);
+        assert!(
+            !result.rewrite.contains("9abc6037"),
+            "citation is stripped: {}",
+            result.rewrite
+        );
+    }
+
+    #[test]
+    fn a_rewrite_about_a_different_achievement_needs_human_input() {
+        let result = classify_rewrite(
+            "Increased customer retention by 47% through a redesigned onboarding programme",
+            "Cut asset search time from 30 minutes to under 5 minutes by restructuring the SharePoint library",
+            &[
+                claim(
+                    "claim-1",
+                    "Cut asset search time from 30 minutes to under 5 minutes by restructuring the SharePoint library",
+                ),
+                claim("claim-2", "Rebuilt the new-hire onboarding curriculum"),
+            ],
+        );
+        assert_eq!(result.status, "needs_human_input");
+        assert!(result.rewrite.is_empty());
+        let problem = result.problem.unwrap_or_default();
+        assert!(problem.contains("subject"), "{problem}");
+    }
+
+    #[test]
+    fn demo_fixture_parses_into_drafts() {
+        let raw = std::fs::read_to_string("eval/demo-bullets.json").expect("fixture is checked in");
+        let drafts = super::parse_demo_drafts(&raw).expect("fixture parses");
+        assert_eq!(drafts.len(), 2);
+        assert!(drafts[0].rewrite.contains("47%"));
     }
 }
