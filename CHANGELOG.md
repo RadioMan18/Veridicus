@@ -17,10 +17,12 @@ Notable changes to Veridicus, newest first. Versions follow [Semantic Versioning
 
 ## [1.0.0] — 2026-11-10
 
+The GitHub release for this version was withdrawn on 2026-11-11, because both installers carried the two `/bullets` defects fixed in 1.0.1. The tag remains, so the source is still there, but there is no download.
+
 ### Added
 
 - First public release: Tauri 2 desktop app with a SQLCipher-encrypted claims ledger, the `/apply` pipeline, interview practice, application tracking and the honesty guardrails that ground generated documents in confirmed claims.
 - MSI and NSIS installers. Neither is code-signed, so Windows SmartScreen warns on first run.
 
 [1.0.1]: https://github.com/RadioMan18/Veridicus/releases/tag/v1.0.1
-[1.0.0]: https://github.com/RadioMan18/Veridicus/releases/tag/v1.0.0
+[1.0.0]: https://github.com/RadioMan18/Veridicus/tree/v1.0.0
