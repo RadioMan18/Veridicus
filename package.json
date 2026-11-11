@@ -1,6 +1,6 @@
 {
   "name": "veridicus",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Veridicus Desktop — privacy-first job search OS with honesty guardrails",
   "type": "module",
   "scripts": {
