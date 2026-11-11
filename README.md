@@ -6,6 +6,14 @@ Privacy-first job search OS with honesty guardrails. Veridicus is a Tauri 2 desk
 
 Every generated sentence is grounded in a **Claims Ledger** of confirmed facts; a model that invents, pads or contradicts the ledger is rejected and retried rather than shipped. All inference is local through Ollama, so resumes and job descriptions never leave the machine.
 
+## Demo
+
+![The /bullets command blocking a 47% figure no claim supports, then rewriting a grounded bullet](docs/demo/bullets-demo.gif)
+
+`/bullets` drafts a stronger version of each resume bullet from your confirmed claims, then re-checks the draft before showing it. In the clip the first bullet keeps a 47% figure that nothing in the ledger supports, so it is blocked and the offending number is named; the second is grounded and comes back rewritten. The same run is in [docs/demo/bullets-review.png](docs/demo/bullets-review.png) as a still, and as [an MP4](docs/demo/bullets-demo.mp4).
+
+The model's draft in this recording comes from the checked-in fixture `src-tauri/eval/demo-bullets.json` rather than a live local model, so the result is reproducible; the classifiers that block and accept the bullets are the ordinary ones, and the fixture still goes through every one of them.
+
 ## Features
 
 ### Honesty guardrails
@@ -143,7 +151,7 @@ Neither installer is code-signed, so Windows SmartScreen warns on first run whil
 ```bash
 npm test                                    # Vitest: pure frontend modules, no DOM
 npx tsc --noEmit                            # type check the frontend
-cd src-tauri && cargo test --bins           # 203 unit tests
+cd src-tauri && cargo test --bins           # 207 unit tests
 npm run build                               # rebuild dist/ for the bundled UI
 ```
 

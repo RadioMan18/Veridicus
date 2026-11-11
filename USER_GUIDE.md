@@ -43,6 +43,16 @@ Avoid models below about 3B for documents, and avoid reasoning-only or uncensore
    - **Claims Verification**: Review and confirm extracted claims (these become your verified facts)
    - **Ollama Models**: Select models for fast and deep tasks
 
+![The Review claims step of the setup guide, with three suggested claims and one selected showing its evidence type and reference](docs/demo/claims-review.png)
+
+The Review claims step suggests statements taken from the resume you just pasted. Nothing enters the verified claims ledger until you tick it and name the evidence behind it, and a reference you give is fingerprinted with your name as verifier. Leaving every suggestion unchecked is a valid answer.
+
+When the wizard finishes, Veridicus opens on the dashboard:
+
+![The Veridicus dashboard, with cards for applying to a posting, tracking applications, preparing for a call and keeping the master resume](docs/demo/dashboard.png)
+
+Each card opens the workflow it names, and the same commands can be run by name from the palette. The header shows which local model is loaded and whether the workspace is ready.
+
 ### Opening the Command Palette
 Press Cmd+K (Mac) or Ctrl+K (Windows/Linux) to open the command palette, or click the \"Cmd+K\" button in the header.
 
