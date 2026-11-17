@@ -18,6 +18,8 @@ This release replaces the 1.0.1 installers. The application binary changed, so i
 
 ## [1.0.1] — 2026-11-11
 
+The GitHub release for this version was withdrawn on 2026-11-17, because 1.0.2 replaces both installers. The tag remains, so the source is still there, but there is no download.
+
 ### Fixed
 
 - `/bullets` no longer reads a claim citation as a metric. A draft that cited a claim as `[9abc6037-707e-4531-a654-5947e610666c]` had those digits counted as unbacked numbers, so a correctly grounded bullet was blocked. Citations are now stripped before numbers are compared, and are no longer shown in the rewritten bullet.
@@ -39,5 +41,5 @@ The GitHub release for this version was withdrawn on 2026-11-11, because both in
 - MSI and NSIS installers. Neither is code-signed, so Windows SmartScreen warns on first run.
 
 [1.0.2]: https://github.com/RadioMan18/Veridicus/releases/tag/v1.0.2
-[1.0.1]: https://github.com/RadioMan18/Veridicus/releases/tag/v1.0.1
+[1.0.1]: https://github.com/RadioMan18/Veridicus/tree/v1.0.1
 [1.0.0]: https://github.com/RadioMan18/Veridicus/tree/v1.0.0
