@@ -4,11 +4,9 @@
 
 ### Install Ollama
 
-Veridicus runs every model locally through Ollama: there is no cloud account, API key or subscription. Install Ollama once, before the setup wizard asks which models to use.
+Veridicus runs every model locally through Ollama: there is no cloud account, API key or subscription. Install Ollama once, before the setup wizard asks which models to use. Veridicus is packaged for Windows only (NSIS and MSI installers), so there is no macOS or Linux build to install.
 
 - **Windows**: download `OllamaSetup.exe` from [ollama.com/download](https://ollama.com/download) and run it, or install from PowerShell with `irm https://ollama.com/install.ps1 | iex`. It installs in your user account, starts in the background, and serves the API on `http://localhost:11434`.
-- **macOS**: download the app from [ollama.com/download](https://ollama.com/download) and drag it to Applications, or run `curl -fsSL https://ollama.com/install.sh | sh`. Open the app once so its background service starts.
-- **Linux**: run `curl -fsSL https://ollama.com/install.sh | sh`, which installs and starts the service.
 
 Confirm the install, then pull at least one model:
 
@@ -17,31 +15,34 @@ ollama --version
 ollama pull llama3.2:3b
 ```
 
-If Veridicus reports that Ollama is not responding, start the daemon with `ollama serve` (on Windows and macOS the desktop app normally starts it for you).
+If Veridicus reports that Ollama is not responding, start the daemon with `ollama serve` (the desktop app normally starts it for you).
 
 ### Recommended Models
 
-Veridicus uses two model roles, set in Ollama Settings: a **fast** model for short tasks (gap analysis, fact-check, bullet review) and a **deep** model for documents (`/apply`, `/prep`, `/mock`). Both should be instruction-tuned, because the app relies on the model following a fixed output shape and returning JSON for bullet review.
+Veridicus uses two model roles, set under Settings -> Local models: a **fast** model for short tasks (gap analysis, fact-check, bullet review) and a **deep** model for documents (`/apply`, `/prep`, `/mock`). Both should be instruction-tuned, because the app relies on the model following a fixed output shape and returning JSON for bullet review.
 
 | Model | Pull | Size | Role |
 | --- | --- | --- | --- |
-| `llama3.2:3b` | `ollama pull llama3.2:3b` | 2.0 GB | Fast default; fits an 8 GB machine |
+| `llama3.2:3b` | `ollama pull llama3.2:3b` | 2.0 GB | Fast, and fits an 8 GB machine |
 | `qwen3:8b` | `ollama pull qwen3:8b` | 5.2 GB | Fast, stronger at following instructions |
-| `gemma4:12b` | `ollama pull gemma4:12b` | ~8 GB | Deep default on a 16 GB machine |
+| `gemma4:12b` | `ollama pull gemma4:12b` | ~8 GB | Deep, and fits a 16 GB machine |
 | `qwen3:14b` | `ollama pull qwen3:14b` | 9.3 GB | Deep alternative, 16 GB and up |
 
-Sizing rule: keep the model file under roughly half your RAM and leave the rest for the context window. A document generation sends the base resume, the verified claims and the posting in one prompt, so Veridicus asks for a 24 576-token context by default; raise the context length in Ollama Settings for a long base resume. All four models above support a large enough context.
+Both roles are `llama3.2:latest` on a fresh install, so the table is what to choose rather than what is already selected.
+
+Sizing rule: keep the model file under roughly half your RAM and leave the rest for the context window. A document generation sends the base resume, the verified claims and the posting in one prompt, so Veridicus asks for a 24 576-token context by default; raise the context length under Settings -> Local models for a long base resume. All four models above support a large enough context.
 
 Avoid models below about 3B for documents, and avoid reasoning-only or uncensored fine-tunes: they tend to answer in commentary or refuse the required shape, which the guardrails reject after one retry. If a document fails on the same defect twice, try a larger deep model before editing your claims.
 
 ### First Launch
 1. Launch Veridicus from your installed application
-2. Complete the Setup Wizard:
-   - **Welcome**: Introduction to Veridicus
-   - **Profile**: Enter your name, contact info, and target roles
-   - **Master Resume**: Upload or paste your resume
-   - **Claims Verification**: Review and confirm extracted claims (these become your verified facts)
-   - **Ollama Models**: Select models for fast and deep tasks
+2. Complete the Setup Wizard, which runs in six steps:
+   - **Welcome to Veridicus**: What the guide covers, and that every step can be skipped
+   - **Your profile**: Name, contact details and target roles
+   - **Master resume**: Paste your resume, or open a text or Markdown file; DOCX and PDF resumes are imported from **Documents**
+   - **Review claims**: Tick the statements you can verify and name the evidence behind each
+   - **Local models**: Choose the fast and deep models, or finish and set them later
+   - **Presentation preferences**: Date format, tenure wording, and whether metrics keep employer details
 
 ![The Review claims step of the setup guide, with three suggested claims and one selected showing its evidence type and reference](docs/demo/claims-review.png)
 
@@ -51,33 +52,34 @@ When the wizard finishes, Veridicus opens on the dashboard:
 
 ![The Veridicus dashboard, with cards for applying to a posting, tracking applications, preparing for a call and keeping the master resume](docs/demo/dashboard.png)
 
-Each card opens the workflow it names, and the same commands can be run by name from the palette. The header shows which local model is loaded and whether the workspace is ready.
+Each card opens the workflow it names, and the same commands can be run by name from the palette. The header carries a quiet trust line naming the loaded model, or saying `Ollama offline`; the sidebar footer shows whether the workspace is ready.
 
 ### Opening the Command Palette
-Press Cmd+K (Mac) or Ctrl+K (Windows/Linux) to open the command palette, or click the \"Cmd+K\" button in the header.
+Press Ctrl+K to open the command palette, or click the search bar in the header. `?` opens the shortcut sheet, and `g` then `a`, `d`, `p` or `s` jumps to Applications, Dashboard, Prep or Settings.
 
 ## Workflow Order
 
 ### 1. Import Your Resume
 Before applying to jobs, you need to import your resume and build your Claims Ledger.
 
-**Option A: Dashboard Button**
-- Click \"Open Resume File\" in the header
-- Select your resume (PDF, DOCX, ODT, TXT, or MD)
+**Option A: Documents view**
+- Open **Documents** in the sidebar
+- Click **Import resume** and select your file (PDF, DOCX, ODT, TXT, or MD)
+- Extracted claims wait in the setup guide until you confirm them
 
 **Option B: Command Palette**
-`
+```
 /resume [filepath]
-`
+```
 - If no filepath provided, a file dialog will open
 - Claims are automatically extracted and saved to the encrypted ledger
 
 ### 2. Apply to a Job
 The main workflow for applying to a job posting.
 
-`
+```
 /apply <job-url>
-`
+```
 
 **What it does:**
 1. Scrapes the job description from the URL
@@ -87,58 +89,54 @@ The main workflow for applying to a job posting.
 5. Runs fact-check pass to ensure no hallucinations
 6. Compiles PDF using Typst
 7. Performs visual QA on generated PDFs
-8. Updates Application Ledger and commits to Git
+8. Saves the application as pending review — the Git commit and the approved status follow only when you approve the documents
 
 **Example:**
-`
+```
 /apply https://jobs.lever.co/company/abc123
-`
+```
 
 ### 3. Prepare for Interviews
 Research a company before your interview.
 
-`
+```
 /prep <company-name>
-`
+```
 
 **Example:**
-`
+```
 /prep Acme Corp
-`
+```
 
 Generates a company briefing with overview, recent news, culture, interview tips, and talking points.
 
 ### 4. Practice Interviews
 Run a STAR-method interview simulator.
 
-`
+```
 /mock <role>
-`
+```
 
 **Example:**
-`
+```
 /mock Senior Software Engineer
-`
+```
 
 Starts a session, not a single prompt. The interviewer asks one question at a time from the grounded question bank and waits for your answer; type your answer and press Enter.
 
 **Two modes.** `/mock <role>` is coaching mode: every answer is scored on relevance, structure, specificity and impact, with one thing to fix. Add `--simulation` to withhold all feedback until the end, the way a real interview runs.
 
-`
+The command opens a setup card first, with the role prefilled from your latest application, plus mode, interviewer persona, question count and focus. `--simulation` preselects the mode; naming a persona (`--persona <name>`) starts the session without the card.
+
+```
 /mock Director of Training --simulation
-`
+```
 
 **During a session:**
 
-`
-/skip
-` passes the current question,
-`
-/retry
-` redoes the previous one, and
-`
-/end
-` stops early and produces the debrief. Esc closes the palette and pauses the session; Ctrl+K resumes it where you stopped. A pause hint appears in the output the first time.
+`/skip` passes the current question,
+`/retry` redoes the previous one, and
+`/end` stops early and produces the debrief. Esc closes the palette and pauses the session; Ctrl+K resumes it where you stopped. A pause hint appears in the output the first time.
 
 **The debrief** lists every question with its score, what worked, the fixes worth making first, delivery facts measured from your own answers (length, hedging, STAR coverage, whether you used a number), and what to rehearse next. It is also saved in the palette output for the rest of the app session.
 
@@ -154,34 +152,48 @@ Pick who to follow up with, then draft one email.
 ### 6. Weekly Report
 Generate a summary of your job search activity.
 
-`
+```
 /weekly
-`
+```
 
-Shows total applications, submitted, interviewing, rejected, and offers.
+Shows total applications, submitted, interviewing, rejected, and offers. The counts cover everything in the ledger, not only the past week.
 
 ### 7. Log Analysis
 Analyze your daily logs and application counts.
 
-`
+```
 /logs
-`
+```
 
 Shows today's applications, past 7 days, and daily log contents.
 
 ## Additional Features
 
-### Application Ledger
-Click \"Application Ledger\" in the header to view all applications with their status, employer, role, and dates. You can update application status from this view.
+### Applications
+**Applications** in the sidebar lists every application with its status, employer, role and dates. `j` and `k` move between rows, Enter opens one, and its status can be changed from the detail panel.
 
-### Export Resume
-Click \"Export Resume\" to export your resume in ATS-optimized format (PDF, DOCX, or ODT).
+### Documents and export
+**Documents** in the sidebar imports the master resume and exports it as PDF, DOCX or ODT. An export runs the ATS check first and reports its warnings alongside the file it wrote. `/export pdf`, `/export docx` and `/export odt` open the same dialog.
 
-### Ollama Settings
-Click \"Ollama Settings\" to:
-- View installed models
-- Configure fast model (quick tasks) and deep model (complex tasks like /apply)
-- Download new models from Ollama
+### Role fit
+**Role fit** in the sidebar takes one application at a time and shows what the posting asks for, which claims in the ledger prove it, and the gaps in between, with a decision to record on each gap. `/fit` opens the same view.
+
+### Prep tabs
+**Prep** in the sidebar holds the company briefing, the question bank and the STAR story bank for an application, plus the mock runs already practised for it. `/questions` and `/stories` print the bank or the stories into the palette for the latest application.
+
+### Other commands
+
+| Command | What it does |
+| --- | --- |
+| `/bullets` | Reviews up to twelve master-resume bullets, rewrites them without changing their subject, and flags missing metrics |
+| `/review` | Recruiter-style verdict on the latest application |
+| `/pack` | Assembles the application pack from artifacts already on disk |
+| `/questions`, `/stories` | Question bank and STAR bank for the latest application |
+| `/fit` | Opens Role fit |
+| `/export pdf`, `/export docx`, `/export odt` | Opens the export dialog in that format |
+
+### Local models (Settings)
+**Settings -> Local models -> Configure** shows the installed models, sets the fast model for quick tasks and the deep model for documents such as `/apply`, and pulls a new model.
 
 ### Honesty Record (Settings)
 
@@ -253,8 +265,8 @@ Generation never commits by itself. When you approve an application, Veridicus r
 
 - **Be honest**: Only claims in your ledger are used. If a required skill isn't there, it won't be added
 - **Keep Ollama running**: Veridicus requires Ollama to be running locally
-- **Use the ledger**: Track all applications in the Application Ledger
-- **Git history**: All /apply runs are automatically committed to Git in your Veridicus workspace
+- **Use the ledger**: Track all applications in **Applications**
+- **Git history**: Approving an application commits it to the local Git history in your workspace; generating on its own never commits
 
 ## Troubleshooting
 
