@@ -1,0 +1,180 @@
+name: Release
+
+# Pushing a `v*` tag builds the Windows installers on the platform they ship to,
+# writes a SHA256SUMS over them, and attaches all three to that tag's release.
+# 1.0.2 was assembled by hand; this is the path for every release after it.
+#
+# The repository is unsigned, so nothing here signs anything. The checksums are
+# plain digests, not provenance: they prove a download arrived intact.
+on:
+  push:
+    tags:
+      - 'v*'
+
+# Creating the release and uploading assets needs to write to the repository.
+permissions:
+  contents: write
+
+# A tag build publishes software, so never cancel one halfway through: a second
+# push for the same tag waits rather than deleting assets the first is uploading.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish installers
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: 'src-tauri -> target'
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      # The version lives in three files, and a tag that disagrees with them
+      # would publish installers labelled with a version they are not. Fail here
+      # rather than shipping a mislabelled release.
+      - name: Check the tag matches the version in the tree
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          echo "tag: $GITHUB_REF_NAME (version $version)"
+          status=0
+          for file in package.json src-tauri/tauri.conf.json; do
+            found=$(node -p "require('./$file').version")
+            echo "$file: $found"
+            [ "$found" = "$version" ] || status=1
+          done
+          # The first `version = "..."` line in Cargo.toml is the [package] one;
+          # dependency versions are inline tables and do not match this pattern.
+          cargo_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' src-tauri/Cargo.toml | head -1)
+          echo "src-tauri/Cargo.toml: $cargo_version"
+          [ "$cargo_version" = "$version" ] || status=1
+          if [ "$status" -ne 0 ]; then
+            echo "::error::the tag $GITHUB_REF_NAME does not match the version in the tree"
+            exit 1
+          fi
+
+      # SQLCipher is built from source and links the system OpenSSL, but the
+      # Windows images ship OpenSSL "light", without its development headers.
+      # `libsqlite3-sys` reads OPENSSL_LIB_DIR and OPENSSL_INCLUDE_DIR ahead of
+      # any probing, so both are pinned to whichever install has the headers.
+      - name: Install OpenSSL development headers
+        shell: pwsh
+        run: |
+          $candidates = @("C:\Program Files\OpenSSL", "C:\Program Files\OpenSSL-Win64")
+          $root = $candidates | Where-Object { Test-Path "$_\include\openssl\crypto.h" } |
+            Select-Object -First 1
+          if (-not $root) {
+            choco install openssl --no-progress -y --force
+            $root = $candidates | Where-Object { Test-Path "$_\include\openssl\crypto.h" } |
+              Select-Object -First 1
+          }
+          if (-not $root) {
+            throw "OpenSSL development headers were not found in: $($candidates -join ', ')"
+          }
+          # Prefer the release import library, not the debug one, and the x64 build.
+          $lib = Get-ChildItem -Path $root -Recurse -Filter libcrypto.lib -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\x64\\' -and $_.FullName -notmatch '\\MDd\\' } |
+            Sort-Object { $_.FullName -match '\\MD\\' } -Descending |
+            Select-Object -First 1
+          if (-not $lib) {
+            throw "No x64 libcrypto.lib was found under $root"
+          }
+          "OPENSSL_INCLUDE_DIR=$root\include" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "OPENSSL_LIB_DIR=$($lib.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$root\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          Write-Host "OpenSSL headers: $root\include"
+          Write-Host "OpenSSL libraries: $($lib.Directory.FullName)"
+
+      # `bundle.targets` in tauri.conf.json is ["msi", "nsis"], so this produces
+      # both installers. `Cargo.lock` is ignored by this repository, so the
+      # dependency graph resolves fresh rather than being pinned with --locked.
+      - name: Build the installers
+        run: npm run tauri build
+
+      # The installers are selected by the tagged version rather than by a bare
+      # wildcard, so a bundle directory that still holds an older build cannot
+      # smuggle its files into this release's checksums.
+      #
+      # `sha256sum` here prefixes binary entries with `*` and keeps the path, so
+      # both are stripped to leave `hash  filename`: portable enough for
+      # `sha256sum -c` in the folder a downloader saved the files into.
+      - name: Write SHA256SUMS
+        shell: bash
+        working-directory: src-tauri/target/release/bundle
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          shopt -s nullglob
+          nsis=(nsis/*_"${version}"_x64-setup.exe)
+          msi=(msi/*_"${version}"_x64_en-US.msi)
+          if [ "${#nsis[@]}" -ne 1 ] || [ "${#msi[@]}" -ne 1 ]; then
+            echo "::error::expected one NSIS and one MSI installer named for $version, found ${#nsis[@]} and ${#msi[@]}"
+            ls -R
+            exit 1
+          fi
+          echo "NSIS_INSTALLER=${nsis[0]}" >> "$GITHUB_ENV"
+          echo "MSI_INSTALLER=${msi[0]}" >> "$GITHUB_ENV"
+          sha256sum "${nsis[0]}" "${msi[0]}" |
+            sed -E 's#^([0-9a-f]{64}) [* ]([^/]+/)*([^/]+)$#\1  \3#' > SHA256SUMS
+          cat SHA256SUMS
+          if [ "$(wc -l < SHA256SUMS)" -ne 2 ]; then
+            echo "::error::SHA256SUMS should hold two lines"
+            exit 1
+          fi
+
+      # The release notes are the matching CHANGELOG.md section, the same source
+      # 1.0.2's notes came from, so the changelog stays the only place to edit.
+      - name: Attach the installers to the release
+        shell: bash
+        working-directory: src-tauri/target/release/bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk -v header="## [$version]" '
+            index($0, header) == 1 { found = 1; next }
+            found && index($0, "## [") == 1 { exit }
+            found { print }
+          ' "$GITHUB_WORKSPACE/CHANGELOG.md" > "$notes"
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; re-uploading its assets"
+          elif [ -s "$notes" ]; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "Veridicus $GITHUB_REF_NAME" --notes-file "$notes"
+          else
+            echo "no CHANGELOG.md section for $version; using generated notes"
+            gh release create "$GITHUB_REF_NAME" --verify-tag \
+              --title "Veridicus $GITHUB_REF_NAME" --generate-notes
+          fi
+
+          # --clobber makes a re-run replace assets instead of failing on the
+          # ones a previous attempt already uploaded.
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            "$NSIS_INSTALLER" "$MSI_INSTALLER" SHA256SUMS
+
+      - name: Summarise the release
+        shell: bash
+        working-directory: src-tauri/target/release/bundle
+        run: |
+          {
+            echo "### $GITHUB_REF_NAME"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo "[Release page](https://github.com/$GITHUB_REPOSITORY/releases/tag/$GITHUB_REF_NAME)"
+          } >> "$GITHUB_STEP_SUMMARY"
