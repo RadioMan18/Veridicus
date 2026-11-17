@@ -1,6 +1,6 @@
 {
   "name": "veridicus",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Veridicus Desktop — privacy-first job search OS with honesty guardrails",
   "type": "module",
   "scripts": {
@@ -24,13 +24,13 @@
     "@tauri-apps/cli": "^2.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
-    "@vitejs/plugin-react": "^4.0.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.4.0",
     "playwright": "^1.64.1",
     "postcss": "^8.4.0",
     "tailwindcss": "^3.4.0",
     "typescript": "^5.4.0",
-    "vite": "^5.4.0",
-    "vitest": "^3.2.7"
+    "vite": "^7.3.8",
+    "vitest": "^4.1.12"
   }
 }

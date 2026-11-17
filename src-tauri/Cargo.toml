@@ -1,6 +1,6 @@
 [package]
 name = "veridicus"
-version = "1.0.1"
+version = "1.0.2"
 description = "Veridicus Desktop — privacy-first job search OS with honesty guardrails"
 authors = ["Veridicus"]
 edition = "2021"
@@ -48,6 +48,8 @@ windows = { version = "0.52", features = ["Win32_Security_Credentials"] }
 winreg = "0.5"
 tauri-plugin-dialog = "2.8.4"
 rfd = "0.17.2"
-zip = "0.6"
+# Only deflate: DOCX and ODT packages use it, and the default features pull a
+# C toolchain (bzip2, zstd, xz) the app never needs.
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
 tauri-plugin-fs = "2"
 tauri-plugin-notification = "2"

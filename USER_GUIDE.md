@@ -1,5 +1,7 @@
 ﻿# Veridicus User Guide
 
+This guide covers Veridicus 1.0.2, the current release. The installers are attached to the [v1.0.2 release](https://github.com/RadioMan18/Veridicus/releases/tag/v1.0.2).
+
 ## Getting Started
 
 ### Install Ollama

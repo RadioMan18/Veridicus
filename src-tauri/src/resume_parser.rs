@@ -114,7 +114,12 @@ pub fn parse_docx_text(path: &str) -> Result<String, String> {
     let mut document_xml = String::new();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| format!("Failed to read zip entry: {}", e))?;
-        if entry.name() == "word/document.xml" {
+        // zip 9 returns the entry name as a `Result`, because a name that is not
+        // valid UTF-8 (an attacker-controlled local header) is an error now.
+        let name = entry
+            .name()
+            .map_err(|e| format!("Failed to read zip entry name: {}", e))?;
+        if name.as_ref() == "word/document.xml" {
             entry.read_to_string(&mut document_xml).map_err(|e| format!("Failed to read document.xml: {}", e))?;
             break;
         }
@@ -138,7 +143,10 @@ pub fn parse_odt_text(path: &str) -> Result<String, String> {
     let mut content_xml = String::new();
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i).map_err(|e| format!("Failed to read zip entry: {}", e))?;
-        if entry.name() == "content.xml" {
+        let name = entry
+            .name()
+            .map_err(|e| format!("Failed to read zip entry name: {}", e))?;
+        if name.as_ref() == "content.xml" {
             entry.read_to_string(&mut content_xml).map_err(|e| format!("Failed to read content.xml: {}", e))?;
             break;
         }

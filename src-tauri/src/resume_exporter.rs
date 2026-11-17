@@ -112,14 +112,14 @@ pub fn export_ats_resume(
 fn generate_docx(markdown: &str, output_path: &PathBuf) -> Result<(), String> {
     use std::io::Write;
     use zip::ZipWriter;
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
 
     let doc_content = generate_docx_xml(markdown);
 
     let file = fs::File::create(output_path).map_err(|e| format!("Failed to create DOCX: {}", e))?;
     let mut zip = ZipWriter::new(file);
 
-    let options = FileOptions::default()
+    let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
@@ -261,7 +261,7 @@ fn escape_xml(text: &str) -> String {
 fn generate_odt(markdown: &str, output_path: &PathBuf) -> Result<(), String> {
     use std::io::Write;
     use zip::ZipWriter;
-    use zip::write::FileOptions;
+    use zip::write::SimpleFileOptions;
 
     let content_xml = generate_odt_content_xml(markdown);
     let styles_xml = generate_odt_styles_xml();
@@ -272,11 +272,16 @@ fn generate_odt(markdown: &str, output_path: &PathBuf) -> Result<(), String> {
     let file = fs::File::create(output_path).map_err(|e| format!("Failed to create ODT: {}", e))?;
     let mut zip = ZipWriter::new(file);
 
-    let options = FileOptions::default()
+    // ODF 1.2 §3.2: `mimetype` is the first entry and is stored, not deflated,
+    // so unzip and file(1) can read the media type without inflating the archive.
+    let stored = SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .unix_permissions(0o644);
+    let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
-    zip.start_file("mimetype", options)
+    zip.start_file("mimetype", stored)
         .map_err(|e| format!("Failed to write mimetype: {}", e))?;
     zip.write_all(b"application/vnd.oasis.opendocument.text")
         .map_err(|e| format!("Failed to write mimetype: {}", e))?;
@@ -316,9 +321,7 @@ fn generate_odt_content_xml(markdown: &str) -> String {
 
     xml.push_str(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
-xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
-office:version="1.2">
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.2">
 <office:body>
 <office:text>"#,
     );
@@ -355,51 +358,56 @@ office:version="1.2">
         }
     }
 
-    xml.push_str("</office:text></office:body></office:document>");
+    xml.push_str("</office:text></office:body></office:document-content>");
     xml
 }
 
 /// Generate ODT styles.xml.
 fn generate_odt_styles_xml() -> String {
     r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
-xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0"
-xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0"
-office:version="1.2">
-<office:automatic-styles>
-<style:style style:name="Standard" style:family="paragraph"/>
+<office:document-styles xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:style="urn:oasis:names:tc:opendocument:xmlns:style:1.0" xmlns:fo="urn:oasis:names:tc:opendocument:xmlns:xsl-fo-compatible:1.0" office:version="1.2">
+<office:styles>
+<style:default-style style:family="paragraph">
+<style:text-properties fo:font-family="Calibri" fo:font-size="11pt"/>
+</style:default-style>
+<style:style style:name="Standard" style:family="paragraph">
+<style:paragraph-properties fo:margin-bottom="0.08in"/>
+</style:style>
 <style:style style:name="Heading1" style:family="paragraph">
-<text:properties/>
+<style:paragraph-properties fo:margin-top="0.16in" fo:margin-bottom="0.08in" fo:keep-with-next="always"/>
+<style:text-properties fo:font-size="16pt" fo:font-weight="bold"/>
 </style:style>
 <style:style style:name="Heading2" style:family="paragraph">
-<text:properties/>
+<style:paragraph-properties fo:margin-top="0.12in" fo:margin-bottom="0.06in" fo:keep-with-next="always"/>
+<style:text-properties fo:font-size="13pt" fo:font-weight="bold"/>
 </style:style>
 <style:style style:name="List" style:family="paragraph">
-<text:properties/>
+<style:paragraph-properties fo:margin-left="0.25in" fo:text-indent="-0.25in"/>
 </style:style>
-</office:automatic-styles>
+</office:styles>
 </office:document-styles>"#
     .to_string()
 }
 
 /// Generate ODT meta.xml.
 fn generate_odt_meta_xml() -> String {
-    r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
-office:version="1.2">
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/" office:version="1.2">
 <office:meta>
-<dc:title xmlns:dc="http://purl.org/dc/elements/1.1/">Veridicus Resume</dc:title>
-<dc:date xmlns:dc="http://purl.org/dc/elements/1.1/"></dc:date>
+<meta:generator>Veridicus</meta:generator>
+<dc:title>Veridicus Resume</dc:title>
+<dc:date>{}</dc:date>
 </office:meta>
-</office:document-meta>"#
-    .to_string()
+</office:document-meta>"#,
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ")
+    )
 }
 
 /// Generate ODT settings.xml.
 fn generate_odt_settings_xml() -> String {
     r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-settings xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0"
-office:version="1.2">
+<office:document-settings xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" office:version="1.2">
 <office:settings/>
 </office:document-settings>"#
     .to_string()
@@ -408,9 +416,12 @@ office:version="1.2">
 /// Generate ODT manifest.xml.
 fn generate_odt_manifest_xml() -> String {
     r#"<?xml version="1.0" encoding="UTF-8"?>
-<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0">
-<manifest:file-entry manifest:media-type="application/vnd.oasis.opendocument.text" manifest:full-path="/"/>
-<manifest:file-entry manifest:media-type="" manifest:full-path="Pictures/"/>
+<manifest:manifest xmlns:manifest="urn:oasis:names:tc:opendocument:xmlns:manifest:1.0" manifest:version="1.2">
+<manifest:file-entry manifest:media-type="application/vnd.oasis.opendocument.text" manifest:full-path="/" manifest:version="1.2"/>
+<manifest:file-entry manifest:media-type="text/xml" manifest:full-path="content.xml"/>
+<manifest:file-entry manifest:media-type="text/xml" manifest:full-path="styles.xml"/>
+<manifest:file-entry manifest:media-type="text/xml" manifest:full-path="meta.xml"/>
+<manifest:file-entry manifest:media-type="text/xml" manifest:full-path="settings.xml"/>
 </manifest:manifest>"#
     .to_string()
 }
@@ -466,5 +477,127 @@ mod tests {
     #[test]
     fn xml_escaping_removes_illegal_xml_control_characters() {
         assert_eq!(escape_xml("A\u{1} & <B>"), "A &amp; &lt;B&gt;");
+    }
+
+    /// The exporter and the importer share the `zip` crate, so this is the only
+    /// test that would catch a writer/reader split after a crate upgrade.
+    #[test]
+    fn docx_export_reads_back_through_the_parser() {
+        let output_path = std::env::temp_dir().join(format!(
+            "veridicus-docx-roundtrip-{}.docx",
+            uuid::Uuid::new_v4()
+        ));
+        generate_docx(
+            "# Resume\n\n## Experience\n\n- Built reliable tools",
+            &output_path,
+        )
+        .expect("DOCX generation should succeed");
+
+        let text = crate::resume_parser::parse_docx_text(
+            output_path
+                .to_str()
+                .expect("the temporary path should be UTF-8"),
+        )
+        .expect("the DOCX just written should parse");
+
+        assert!(text.contains("Resume"), "missing heading: {text}");
+        assert!(text.contains("Experience"), "missing section: {text}");
+        assert!(
+            text.contains("Built reliable tools"),
+            "missing bullet: {text}"
+        );
+
+        fs::remove_file(output_path).expect("temporary DOCX should be removed");
+    }
+
+    #[test]
+    fn odt_export_reads_back_through_the_parser() {
+        let output_path = std::env::temp_dir().join(format!(
+            "veridicus-odt-roundtrip-{}.odt",
+            uuid::Uuid::new_v4()
+        ));
+        generate_odt(
+            "# Resume\n\n## Experience\n\n- Built reliable tools",
+            &output_path,
+        )
+        .expect("ODT generation should succeed");
+
+        let text = crate::resume_parser::parse_odt_text(
+            output_path
+                .to_str()
+                .expect("the temporary path should be UTF-8"),
+        )
+        .expect("the ODT just written should parse");
+
+        assert!(text.contains("Resume"), "missing heading: {text}");
+        assert!(text.contains("Experience"), "missing section: {text}");
+        assert!(
+            text.contains("Built reliable tools"),
+            "missing bullet: {text}"
+        );
+
+        fs::remove_file(output_path).expect("temporary ODT should be removed");
+    }
+
+    /// ODF 1.2 says `mimetype` is the first entry and is stored, each part has
+    /// its own document root, and the manifest lists the parts. A word
+    /// processor opens an archive that gets this wrong as an empty document,
+    /// which is what happened when `content.xml` was rooted at
+    /// `<office:document>` and every part was deflated.
+    #[test]
+    fn odt_package_matches_the_opendocument_container_rules() {
+        let output_path = std::env::temp_dir().join(format!(
+            "veridicus-odt-container-{}.odt",
+            uuid::Uuid::new_v4()
+        ));
+        generate_odt(
+            "# Resume\n\n## Experience\n\n- Built reliable tools",
+            &output_path,
+        )
+        .expect("ODT generation should succeed");
+
+        let file = fs::File::open(&output_path).expect("generated ODT should exist");
+        let mut archive = zip::ZipArchive::new(file).expect("ODT should be a ZIP archive");
+
+        {
+            let first = archive.by_index(0).expect("ODT should have entries");
+            assert_eq!(first.name().expect("entry name").as_ref(), "mimetype");
+            assert_eq!(first.compression(), zip::CompressionMethod::Stored);
+        }
+
+        let mut read_entry = |name: &str| {
+            let mut content = String::new();
+            archive
+                .by_name(name)
+                .unwrap_or_else(|_| panic!("ODT missing {name}"))
+                .read_to_string(&mut content)
+                .expect("ODT XML should be readable");
+            content
+        };
+
+        assert_eq!(read_entry("mimetype"), "application/vnd.oasis.opendocument.text");
+
+        let content = read_entry("content.xml");
+        assert!(
+            content.contains("<office:document-content"),
+            "content.xml needs the document-content root: {content}"
+        );
+        assert!(content.contains("<office:body>"), "{content}");
+        assert!(content.contains("<office:text>"), "{content}");
+
+        assert!(read_entry("styles.xml").contains("<office:document-styles"));
+        assert!(read_entry("meta.xml").contains("<office:document-meta"));
+        assert!(read_entry("settings.xml").contains("<office:document-settings"));
+
+        let manifest = read_entry("META-INF/manifest.xml");
+        for part in ["content.xml", "styles.xml", "meta.xml", "settings.xml"] {
+            assert!(
+                manifest.contains(&format!(r#"manifest:full-path="{part}""#)),
+                "manifest is missing {part}: {manifest}"
+            );
+        }
+
+        drop(archive);
+        fs::remove_file(output_path).expect("temporary ODT should be removed");
     }
 }

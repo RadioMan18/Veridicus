@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/RadioMan18/veridicus/actions/workflows/ci.yml/badge.svg)](https://github.com/RadioMan18/veridicus/actions/workflows/ci.yml)
 
+**Current release: [v1.0.2](https://github.com/RadioMan18/Veridicus/releases/tag/v1.0.2).** Windows installers are attached to that release; the [changelog](CHANGELOG.md) says what changed.
+
 Privacy-first job search OS with honesty guardrails. Veridicus is a Tauri 2 desktop application (Rust + React + TypeScript) that runs the whole application workflow — scrape a posting, tailor a resume and cover letter, compile PDFs, practice the interview, follow up — while only ever stating facts the candidate has verified.
 
 Every generated sentence is grounded in a **Claims Ledger** of confirmed facts; a model that invents, pads or contradicts the ledger is rejected and retried rather than shipped. All inference is local through Ollama, so resumes and job descriptions never leave the machine.
@@ -151,7 +153,7 @@ Neither installer is code-signed, so Windows SmartScreen warns on first run whil
 ```bash
 npm test                                    # Vitest: pure frontend modules, no DOM
 npx tsc --noEmit                            # type check the frontend
-cd src-tauri && cargo test --bins           # 207 unit tests
+cd src-tauri && cargo test --bins           # 210 unit tests
 npm run build                               # rebuild dist/ for the bundled UI
 ```
 
