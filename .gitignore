@@ -38,6 +38,7 @@ temp/
 
 # Local editor/agent configuration
 .kilo/
+.agents/
 
 # Personal test files and local scratch output
 career_resume_*
